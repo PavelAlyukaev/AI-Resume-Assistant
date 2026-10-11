@@ -26,8 +26,18 @@ ctest --preset debug
 
 Пути к компилятору и Qt заданы в `CMakePresets.json`; при другом расположении MSYS2 их нужно поправить. CLion подхватывает пресеты `mingw-debug`/`mingw-release` автоматически. Для запуска вне PATH с `C:\msys64\mingw64\bin` Qt DLL нужно развернуть через `windeployqt6`. Для SQLite нужен доступный Qt SQL драйвер QSQLITE.
 
+## Инсталлятор
+Установщик собирается [Inno Setup 6](https://jrsoftware.org/isdl.php) из Release-сборки. Скрипт: `installer/AIResumeAssistant.iss`.
+
+```powershell
+cmake --preset mingw-release
+cmake --build --preset release --target installer
+```
+
+Цель `installer` появляется, только если CMake нашёл `ISCC.exe` (стандартные пути установки Inno Setup 6 или `-DISCC_EXECUTABLE=...`). Она выполняет `cmake --install` в `build/mingw-release/deploy` (windeployqt копирует Qt DLL и плагины, `cmake/DeployMinGWRuntime.cmake` докладывает DLL MinGW/MSYS2 и оставляет только SQL-драйвер QSQLITE), затем собирает `build/mingw-release/installer/AIResumeAssistant-<версия>-setup.exe`. База резюме хранится в `%APPDATA%` и при удалении программы не удаляется.
+
 ## CI
-GitHub Actions (`.github/workflows/ci.yml`) на каждый push и PR в `main` собирает проект на `windows-latest` в MSYS2 MINGW64 с теми же пресетами (`mingw-debug` и `mingw-release`) и запускает `ctest`.
+GitHub Actions (`.github/workflows/ci.yml`) на каждый push и PR в `main` собирает проект на `windows-latest` в MSYS2 MINGW64 с теми же пресетами (`mingw-debug` и `mingw-release`) и запускает `ctest`. Джоб `Inno Setup installer` собирает установщик, тихо ставит его и проверяет, что приложение стартует без MSYS2 в PATH; готовый `setup.exe` доступен в артефакте `AIResumeAssistant-setup` запуска.
 
 ## Уже реализовано
 - Окно Qt Widgets для названия резюме и списка карьерных этапов.
