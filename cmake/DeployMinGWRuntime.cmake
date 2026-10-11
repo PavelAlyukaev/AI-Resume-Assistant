@@ -3,10 +3,15 @@
 # MSYS2's Qt links against (ICU, zlib, zstd, freetype, harfbuzz, pcre2, ...).
 # Expects AIRA_RUNTIME_DIRS to be set by a preceding install(CODE).
 
+if(POLICY CMP0207)
+    cmake_policy(SET CMP0207 NEW)
+endif()
+
 set(prefix "${CMAKE_INSTALL_PREFIX}")
 
 # Only QSQLITE is used; other SQL drivers pull in libpq, ODBC, MySQL client.
-file(GLOB sql_drivers "${prefix}/plugins/sqldrivers/*.dll")
+# windeployqt's plugin layout differs between Qt builds, so search the prefix.
+file(GLOB_RECURSE sql_drivers "${prefix}/*/sqldrivers/*.dll")
 foreach(driver IN LISTS sql_drivers)
     get_filename_component(driver_name "${driver}" NAME_WE)
     if(NOT driver_name MATCHES "^qsqlite")
@@ -15,7 +20,7 @@ foreach(driver IN LISTS sql_drivers)
 endforeach()
 
 file(GLOB executables "${prefix}/bin/*.exe")
-file(GLOB_RECURSE plugins "${prefix}/plugins/*.dll")
+file(GLOB_RECURSE plugins "${prefix}/*.dll")
 
 file(GET_RUNTIME_DEPENDENCIES
     EXECUTABLES ${executables}

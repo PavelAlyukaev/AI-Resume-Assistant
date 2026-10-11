@@ -95,7 +95,8 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP "AIResumeAssistant"
           $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/DIR=`"$dir`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Installer exited with $($p.ExitCode)" }
-          if (-not (Test-Path "$dir\plugins\sqldrivers\qsqlite.dll")) { throw "QSQLITE driver is missing" }
+          Get-ChildItem $dir -Recurse -File | ForEach-Object { $_.FullName.Substring($dir.Length + 1) }
+          if (-not (Get-ChildItem $dir -Recurse -Filter "qsqlite*.dll")) { throw "QSQLITE driver is missing" }
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           $app = Start-Process "$dir\bin\AIResumeAssistant.exe" -PassThru
           Start-Sleep -Seconds 10
