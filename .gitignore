@@ -1,0 +1,12 @@
+/build/
+/.vs/
+/.idea/
+*.user
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+.env.*
+!.env.example
+*.log
+__pycache__/
