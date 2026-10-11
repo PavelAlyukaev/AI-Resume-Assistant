@@ -26,6 +26,9 @@ ctest --preset debug
 
 Пути к компилятору и Qt заданы в `CMakePresets.json`; при другом расположении MSYS2 их нужно поправить. CLion подхватывает пресеты `mingw-debug`/`mingw-release` автоматически. Для запуска вне PATH с `C:\msys64\mingw64\bin` Qt DLL нужно развернуть через `windeployqt6`. Для SQLite нужен доступный Qt SQL драйвер QSQLITE.
 
+## CI
+GitHub Actions (`.github/workflows/ci.yml`) на каждый push и PR в `main` собирает проект на `windows-latest` в MSYS2 MINGW64 с теми же пресетами (`mingw-debug` и `mingw-release`) и запускает `ctest`.
+
 ## Уже реализовано
 - Окно Qt Widgets для названия резюме и списка карьерных этапов.
 - Создание и изменение этапов: должность, компания, период, описание.
