@@ -21,3 +21,4 @@
 ## Журнал
 - 2026-10-11: Создан каркас репозитория и учебная конфигурация Claude Code. Проверки в Claude Code не проводились.
 - 2026-10-11: Сборка переведена с MSVC на MSYS2 MinGW (пресеты `mingw-debug`/`mingw-release`, Ninja). Сборка ещё не запускалась.
+- 2026-10-11: Добавлен GitHub Actions CI (`.github/workflows/ci.yml`): windows-latest + MSYS2 MINGW64, пресеты mingw-debug и mingw-release, configure/build/ctest на push и PR в main.
