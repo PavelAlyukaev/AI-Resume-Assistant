@@ -6,19 +6,25 @@ Windows desktop-приложение для улучшения резюме с �
 В перспективе: импорт PDF/DOCX, локальная анонимизация, уточняющее AI-интервью, рекомендации профессий, сравнение с вакансией и экспорт адаптированного резюме. План: [docs/plan.md](docs/plan.md).
 
 ## Стек
-C++23 (минимум), Qt 6 Widgets, Qt SQL/SQLite, Qt Test, CMake; целевая ОС — Windows 10/11 x64. Для разработки рекомендуется Visual Studio 2022/MSVC с актуальной поддержкой C++23 и установленный Qt 6 для MSVC.
+C++23 (минимум), Qt 6 Widgets, Qt SQL/SQLite, Qt Test, CMake; целевая ОС — Windows 10/11 x64. Сборка через MSYS2 MinGW-w64 (`C:/msys64/mingw64`): GCC, Qt 6, CMake и Ninja из этого окружения.
 
 ## Сборка и запуск
-Установить Qt 6 с модулями Core, Widgets, Sql, Test, CMake и Visual Studio 2022 с поддержкой C++23. В PowerShell из корня проекта:
+Установить MSYS2 и пакеты окружения MINGW64:
 
-```powershell
-cmake --preset windows-msvc -DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2022_64"
-cmake --build --preset debug
-ctest --preset debug
-.\build\msvc\Debug\AIResumeAssistant.exe
+```bash
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-qt6-base
 ```
 
-Заменить путь Qt на установленный. При запуске вне Qt Creator может потребоваться развёртывание Qt DLL через `windeployqt`. Для SQLite нужен доступный Qt SQL драйвер QSQLITE.
+Из корня проекта (PowerShell, `C:\msys64\mingw64\bin` в PATH, или оболочка MSYS2 MINGW64):
+
+```powershell
+cmake --preset mingw-debug
+cmake --build --preset debug
+ctest --preset debug
+.\build\mingw-debug\AIResumeAssistant.exe
+```
+
+Пути к компилятору и Qt заданы в `CMakePresets.json`; при другом расположении MSYS2 их нужно поправить. CLion подхватывает пресеты `mingw-debug`/`mingw-release` автоматически. Для запуска вне PATH с `C:\msys64\mingw64\bin` Qt DLL нужно развернуть через `windeployqt6`. Для SQLite нужен доступный Qt SQL драйвер QSQLITE.
 
 ## Уже реализовано
 - Окно Qt Widgets для названия резюме и списка карьерных этапов.
@@ -38,7 +44,7 @@ ctest --preset debug
 
 Агент может читать и изменять исходники по задаче, запускать сборку и тесты, но не должен читать `.env`, публиковать секреты, выполнять разрушительные операции без разрешения или выдавать неподтверждённые тесты за успешные. `PreToolUse` hook блокирует некоторые попытки доступа к `.env`; `PostToolUse` hook проверяет форматирование C++ при наличии clang-format. Это дополнительные меры, а не гарантия безопасности.
 
-Навыки: `/write-tests` — создание тестов; `/review-changes` — ручное ревью изменений. Тесты запускаются через `ctest --preset debug`, отдельный E2E — через `ctest --test-dir build/msvc -C Debug -R resume_e2e --output-on-failure`. Детали демонстрации: [docs/verification.md](docs/verification.md), отчёт: [docs/about.md](docs/about.md).
+Навыки: `/write-tests` — создание тестов; `/review-changes` — ручное ревью изменений. Тесты запускаются через `ctest --preset debug`, отдельный E2E — через `ctest --preset debug -R resume_e2e`. Детали демонстрации: [docs/verification.md](docs/verification.md), отчёт: [docs/about.md](docs/about.md).
 
 ## Приватность
 В будущих версиях персональные данные должны анонимизироваться локально до отправки в LLM API; подтверждённые факты отделяются от предложений модели. Никогда не хранить реальные API-ключи в репозитории.

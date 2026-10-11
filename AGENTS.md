@@ -7,14 +7,14 @@
 - Слои: UI → domain/application → storage/LLM/documents; не переносить бизнес-логику в QWidget.
 
 ## 2. Команды сборки, запуска и тестирования
-- Требуются MSVC с поддержкой C++23, Qt 6 (Core, Widgets, Sql, Test), CMake.
-- Windows configure: `cmake --preset windows-msvc -DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2022_64"` (заменить путь).
+- Тулчейн: MSYS2 MinGW-w64 в `C:/msys64/mingw64` (GCC, Qt 6 с Core/Widgets/Sql/Test, CMake, Ninja). Пути заданы в `CMakePresets.json`.
+- Configure: `cmake --preset mingw-debug` (release: `mingw-release`). `C:/msys64/mingw64/bin` должен быть в PATH или запускать из оболочки MSYS2 MINGW64.
 - Build: `cmake --build --preset debug`.
 - Test all: `ctest --preset debug`.
-- One test: `ctest --test-dir build/msvc -C Debug -R resume_e2e --output-on-failure`.
-- Run: `build/msvc/Debug/AIResumeAssistant.exe` (при сборке через указанный preset).
+- One test: `ctest --preset debug -R resume_e2e`.
+- Run: `build/mingw-debug/AIResumeAssistant.exe` (Qt DLL берутся из `C:/msys64/mingw64/bin` в PATH).
 - Format check: `clang-format --dry-run --Werror <изменённые .cpp/.h>`.
-- Linter: `clang-tidy <файл> -p build/msvc` при наличии корректной compilation database; иначе указать причину пропуска.
+- Linter: `clang-tidy <файл> -p build/mingw-debug` при наличии корректной compilation database; иначе указать причину пропуска.
 - Никогда не утверждать, что тесты прошли, если они не были запущены.
 
 ## 3. Конвенции

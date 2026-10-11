@@ -1,7 +1,7 @@
 # Проверка ДЗ в Claude Code
 
 ## Подготовка
-1. Установить Python 3, Claude Code, CMake, Qt6/MSVC, clang-format.
+1. Установить Python 3, Claude Code, CMake, MSYS2 MinGW-w64 (GCC, Qt 6, Ninja), clang-format.
 2. Запустить `claude` из корня репозитория.
 3. Проверить `/memory` и `/skills` (если доступны в установленной версии) и загрузку CLAUDE.md.
 
@@ -26,7 +26,7 @@
 3. Сравнить ответ с `docs/memory.md`, сохранить скриншот.
 
 ## E2E
-1. `cmake --preset windows-msvc -DCMAKE_PREFIX_PATH="C:/Qt/6.x.x/msvc2022_64"`
+1. `cmake --preset mingw-debug`
 2. `cmake --build --preset debug`
 3. `ctest --preset debug`
 4. Сохранить вывод успешного теста, только если команда реально прошла.

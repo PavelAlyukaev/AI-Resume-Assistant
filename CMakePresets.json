@@ -1,8 +1,28 @@
 {
   "version": 6,
   "configurePresets": [
-    {"name": "windows-msvc", "displayName": "Windows MSVC", "generator": "Visual Studio 17 2022", "architecture": "x64", "binaryDir": "${sourceDir}/build/msvc"}
+    {
+      "name": "mingw-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "C:/msys64/mingw64/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "C:/msys64/mingw64/bin/ninja.exe",
+        "CMAKE_PREFIX_PATH": "C:/msys64/mingw64"
+      },
+      "environment": {"PATH": "C:/msys64/mingw64/bin;$penv{PATH}"},
+      "condition": {"type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows"}
+    },
+    {"name": "mingw-debug", "displayName": "MinGW Debug", "inherits": "mingw-base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
+    {"name": "mingw-release", "displayName": "MinGW Release", "inherits": "mingw-base", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}}
   ],
-  "buildPresets": [{"name": "debug", "configurePreset": "windows-msvc", "configuration": "Debug"}],
-  "testPresets": [{"name": "debug", "configurePreset": "windows-msvc", "configuration": "Debug", "output": {"outputOnFailure": true}}]
+  "buildPresets": [
+    {"name": "debug", "configurePreset": "mingw-debug"},
+    {"name": "release", "configurePreset": "mingw-release"}
+  ],
+  "testPresets": [
+    {"name": "debug", "configurePreset": "mingw-debug", "output": {"outputOnFailure": true}},
+    {"name": "release", "configurePreset": "mingw-release", "output": {"outputOnFailure": true}}
+  ]
 }
