@@ -50,3 +50,61 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.config }}
+
+  installer:
+    name: Inno Setup installer
+    needs: build-test
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          release: false
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt6-base
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc /? | Select-Object -First 1
+
+      - name: Configure
+        run: cmake --preset mingw-release -DISCC_EXECUTABLE="C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
+
+      - name: Build installer
+        run: cmake --build --preset release --target installer
+
+      # Installs silently and launches the app with a PATH that has no MSYS2,
+      # so a missing DLL or Qt plugin fails the job instead of the user.
+      - name: Smoke-test installer
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem build/mingw-release/installer/*.exe | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP "AIResumeAssistant"
+          $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/DIR=`"$dir`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer exited with $($p.ExitCode)" }
+          if (-not (Test-Path "$dir\plugins\sqldrivers\qsqlite.dll")) { throw "QSQLITE driver is missing" }
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $app = Start-Process "$dir\bin\AIResumeAssistant.exe" -PassThru
+          Start-Sleep -Seconds 10
+          if ($app.HasExited) { throw "App exited early with code $($app.ExitCode)" }
+          Stop-Process -Id $app.Id
+          Write-Host "App started from the installed copy and kept running"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIResumeAssistant-setup
+          path: build/mingw-release/installer/*.exe
+          if-no-files-found: error
