@@ -23,3 +23,4 @@
 - 2026-10-11: Сборка переведена с MSVC на MSYS2 MinGW (пресеты `mingw-debug`/`mingw-release`, Ninja). Сборка ещё не запускалась.
 - 2026-10-11: Добавлен GitHub Actions CI (`.github/workflows/ci.yml`): windows-latest + MSYS2 MINGW64, пресеты mingw-debug и mingw-release, configure/build/ctest на push и PR в main.
 - 2026-10-11: Добавлен установщик Inno Setup (`installer/AIResumeAssistant.iss`, CMake-цель `installer`, деплой через windeployqt + `cmake/DeployMinGWRuntime.cmake`) и CI-джоб, который собирает, тихо устанавливает и запускает приложение, выкладывая setup.exe артефактом.
+- 2026-10-12: Порядок работы: код пишется и тесты прогоняются на ПК владельца в локальном MSYS2 MinGW (`C:/msys64/mingw64`), затем commit и PR на GitHub. Каталоги сборки (`/build/`, `/cmake-build-*/` из CLion) и `CMakeUserPresets.json` в `.gitignore`, не коммитятся.
