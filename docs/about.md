@@ -33,7 +33,7 @@ AI Resume Assistant — Windows-приложение на C++23, Qt 6 Widgets, C
 
 Команда: `ctest --preset debug`.
 
-**Результат:** ПРОЙДЕН (2026-10-11). Среда: Windows, MSYS2 MinGW-w64 (`C:/msys64/mingw64`), cmake 4.4.0, g++ 16.1.0, Ninja, Qt 6.11.1. Команды `cmake --preset mingw-debug`, `cmake --build --preset debug` (13 из 13 шагов, без предупреждений) и `ctest --preset debug` завершились с кодом 0; `resume_e2e` прошёл за 0,32 с, итог «100% tests passed out of 1». Скриншот `e2e-green.png` ещё нужно добавить.
+**Результат:** ПРОЙДЕН (2026-10-11). Среда: Windows, MSYS2 MinGW-w64 (`C:/msys64/mingw64`), cmake 4.4.0, g++ 16.1.0, Ninja, Qt 6.11.1. Команды `cmake --preset mingw-debug`, `cmake --build --preset debug` (13 из 13 шагов, без предупреждений) и `ctest --preset debug` завершились с кодом 0; `resume_e2e` прошёл за 0,32 с, итог «100% tests passed out of 1». Повторно пройден 2026-10-12: debug на `b77c582` и release на `468230a`, по 1/1. Скриншот `e2e-green.png` ещё нужно добавить.
 
 ## 7. Скриншоты
 Поместить реальные файлы в `screenshots/`: `env-block.png`, `lint-hook.png`, `memory-resume.png`, `e2e-green.png`, `path-rule.png`, `skills.png`.

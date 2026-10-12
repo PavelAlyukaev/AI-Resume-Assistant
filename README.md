@@ -36,8 +36,11 @@ cmake --build --preset release --target installer
 
 Цель `installer` появляется, только если CMake нашёл `ISCC.exe` (стандартные пути установки Inno Setup 6 или `-DISCC_EXECUTABLE=...`). Она выполняет `cmake --install` в `build/mingw-release/deploy` (windeployqt копирует Qt DLL и плагины, `cmake/DeployMinGWRuntime.cmake` докладывает DLL MinGW/MSYS2 и оставляет только SQL-драйвер QSQLITE), затем собирает `build/mingw-release/installer/AIResumeAssistant-<версия>-setup.exe`. База резюме хранится в `%APPDATA%` и при удалении программы не удаляется.
 
+## Порядок разработки
+Код пишется, собирается и тестируется на ПК разработчика в локальном MSYS2 MinGW (`C:/msys64/mingw64`) командами из раздела «Сборка и запуск». Перед коммитом обязательно выполняются `cmake --build --preset debug` и `ctest --preset debug`. Изменения коммитятся в отдельную ветку и попадают в `main` только через pull request на GitHub. Каталоги сборки (`/build/`, `/cmake-build-*/` из CLion), `CMakeUserPresets.json` и `.claude/settings.local.json` перечислены в `.gitignore` и не коммитятся.
+
 ## CI
-GitHub Actions (`.github/workflows/ci.yml`) на каждый push и PR в `main` собирает проект на `windows-latest` в MSYS2 MINGW64 с теми же пресетами (`mingw-debug` и `mingw-release`) и запускает `ctest`. Джоб `Inno Setup installer` собирает установщик, тихо ставит его и проверяет, что приложение стартует без MSYS2 в PATH; готовый `setup.exe` доступен в артефакте `AIResumeAssistant-setup` запуска.
+GitHub Actions (`.github/workflows/ci.yml`) на каждый push и PR в `main` дополнительно собирает проект на GitHub-раннере `windows-latest` в MSYS2 MINGW64 с теми же пресетами (`mingw-debug` и `mingw-release`) и запускает `ctest`. Джоб `Inno Setup installer` собирает установщик, тихо ставит его и проверяет, что приложение стартует без MSYS2 в PATH; готовый `setup.exe` доступен в артефакте `AIResumeAssistant-setup` запуска.
 
 ## Уже реализовано
 - Окно Qt Widgets для названия резюме и списка карьерных этапов.
@@ -57,10 +60,10 @@ GitHub Actions (`.github/workflows/ci.yml`) на каждый push и PR в `mai
 
 Агент может читать и изменять исходники по задаче, запускать сборку и тесты, но не должен читать `.env`, публиковать секреты, выполнять разрушительные операции без разрешения или выдавать неподтверждённые тесты за успешные. `PreToolUse` hook блокирует некоторые попытки доступа к `.env`; `PostToolUse` hook проверяет форматирование C++ при наличии clang-format. Это дополнительные меры, а не гарантия безопасности.
 
-Навыки: `/write-tests` — создание тестов; `/review-changes` — ручное ревью изменений. Тесты запускаются через `ctest --preset debug`, отдельный E2E — через `ctest --preset debug -R resume_e2e`. Детали демонстрации: [docs/verification.md](docs/verification.md), отчёт: [docs/about.md](docs/about.md).
+Навыки: `/write-tests` — создание тестов; `/review-changes` — ручное ревью изменений. В `.claude/settings.json` агенту без подтверждения разрешены `git status`, `git diff`, `git add`, `git commit`, `cmake --build`, `ctest` и `clang-format --dry-run`; `git push` всегда требует подтверждения, `rm -rf` запрещён. Тесты запускаются через `ctest --preset debug`, отдельный E2E — через `ctest --preset debug -R resume_e2e`. Детали демонстрации: [docs/verification.md](docs/verification.md), отчёт: [docs/about.md](docs/about.md).
 
 ## Приватность
 В будущих версиях персональные данные должны анонимизироваться локально до отправки в LLM API; подтверждённые факты отделяются от предложений модели. Никогда не хранить реальные API-ключи в репозитории.
 
 ## Статус проверок
-Исходники и конфигурации подготовлены, но сборка на Windows, выполнение E2E и поведение Claude Code **пока не проверены**. Результаты необходимо заполнить в `docs/about.md` после реальных запусков.
+Сборка на Windows (MSYS2 MinGW, пресеты `mingw-debug` и `mingw-release`) и E2E-тест `resume_e2e` проходят локально; установщик собирается, ставится и запускает приложение без MSYS2 в PATH. Поведение Claude Code (правило, навыки, hooks, память) **пока не проверено**: результаты и скриншоты заполняются в `docs/about.md`.
