@@ -1,25 +1,55 @@
+
 {
   "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(ctest)",
+      "Bash(ctest *)",
+      "Bash(cmake --build *)",
+      "Bash(clang-format --dry-run *)"
+    ],
+    "ask": [
+      "Bash(git push)",
+      "Bash(git push *)"
+    ],
     "deny": [
       "Read(./.env)",
       "Read(./.env.*)",
       "Edit(./.env)",
       "Edit(./.env.*)",
       "Write(./.env)",
-      "Write(./.env.*)"
+      "Write(./.env.*)",
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash|Read|Edit|Write|MultiEdit|Grep|Glob",
-        "hooks": [{"type": "command", "command": "python .claude/hooks/guard_env.py"}]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/guard_env.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit",
-        "hooks": [{"type": "command", "command": "python .claude/hooks/check_cpp_format.py"}]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/check_cpp_format.py"
+          }
+        ]
       }
     ]
   }
