@@ -18,7 +18,7 @@
 - [x] Собрать на Windows и выполнить тесты.
 - [x] GitHub Actions CI (debug/release) и установщик Inno Setup.
 - [x] Веб-версия UI Sprint 1: локальный HTTP-сервер на `127.0.0.1`, HTML-редактор, JSON API, тесты (`resume_json`, `web_api`).
-- [ ] Проверить веб-интерфейс в браузере (вручную или через Playwright) и сделать скриншот.
+- [x] Проверить веб-интерфейс в браузере: e2e-тест `web_e2e` (Playwright + Chrome), скриншот `screenshots/web-e2e-sprint1.png`.
 - [ ] Улучшить выбор резюме (вместо открытия по ID) в Qt и в вебе.
 
 ## Sprint 2 — Документы и приватность

@@ -85,3 +85,16 @@ add_test(NAME resume_json COMMAND resume_json_test)
 qt_add_executable(web_api_test tests/WebApiTest.cpp)
 target_link_libraries(web_api_test PRIVATE resume_web Qt6::Test)
 add_test(NAME web_api COMMAND web_api_test)
+
+# Browser e2e for the web UI: needs Node.js and `npm install` in tests/e2e (playwright-core + installed Chrome).
+qt_add_executable(web_e2e_server tests/e2e/WebE2EServer.cpp)
+target_link_libraries(web_e2e_server PRIVATE resume_web)
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e/node_modules/playwright-core")
+    add_test(NAME web_e2e
+        COMMAND "${NODE_EXECUTABLE}" tests/e2e/web_e2e.mjs "$<TARGET_FILE:web_e2e_server>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/screenshots/web-e2e-sprint1.png"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+else()
+    message(STATUS "web_e2e skipped: node or tests/e2e/node_modules is missing (run `npm install` in tests/e2e)")
+endif()
