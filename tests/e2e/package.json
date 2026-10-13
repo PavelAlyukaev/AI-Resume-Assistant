@@ -1,0 +1,9 @@
+{
+  "name": "ai-resume-assistant-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser e2e test for the local web UI (uses the installed Chrome via playwright-core)",
+  "devDependencies": {
+    "playwright-core": "1.49.1"
+  }
+}
