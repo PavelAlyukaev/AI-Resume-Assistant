@@ -13,3 +13,6 @@ CMakeUserPresets.json
 *.log
 __pycache__/
 .claude/settings.local.json
+
+node_modules/
+.playwright-mcp/

@@ -6,13 +6,13 @@ Windows desktop-приложение для улучшения резюме с �
 В перспективе: импорт PDF/DOCX, локальная анонимизация, уточняющее AI-интервью, рекомендации профессий, сравнение с вакансией и экспорт адаптированного резюме. План: [docs/plan.md](docs/plan.md).
 
 ## Стек
-C++23 (минимум), Qt 6 Widgets, Qt SQL/SQLite, Qt Test, CMake; целевая ОС — Windows 10/11 x64. Сборка через MSYS2 MinGW-w64 (`C:/msys64/mingw64`): GCC, Qt 6, CMake и Ninja из этого окружения.
+C++23 (минимум), Qt 6 Widgets, Qt SQL/SQLite, Qt HttpServer, Qt Test, CMake; целевая ОС — Windows 10/11 x64. Сборка через MSYS2 MinGW-w64 (`C:/msys64/mingw64`): GCC, Qt 6, CMake и Ninja из этого окружения.
 
 ## Сборка и запуск
 Установить MSYS2 и пакеты окружения MINGW64:
 
 ```bash
-pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-qt6-base
+pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja mingw-w64-x86_64-qt6-base mingw-w64-x86_64-qt6-httpserver
 ```
 
 Из корня проекта (PowerShell, `C:\msys64\mingw64\bin` в PATH, или оболочка MSYS2 MINGW64):
@@ -25,6 +25,9 @@ ctest --preset debug
 ```
 
 Пути к компилятору и Qt заданы в `CMakePresets.json`; при другом расположении MSYS2 их нужно поправить. CLion подхватывает пресеты `mingw-debug`/`mingw-release` автоматически. Для запуска вне PATH с `C:\msys64\mingw64\bin` Qt DLL нужно развернуть через `windeployqt6`. Для SQLite нужен доступный Qt SQL драйвер QSQLITE.
+
+## Веб-версия интерфейса
+При запуске приложение поднимает локальный HTTP-сервер на `127.0.0.1:8765` (если порт занят — на свободном порту; адрес показывается в строке состояния). Меню «Файл → Открыть веб-версию» открывает HTML-интерфейс редактора в браузере. Он работает с той же базой SQLite через JSON API (`GET /api/resumes/<id>`, `POST /api/resumes`, `PUT /api/resumes/<id>`). Сервер слушает только loopback, проверяет заголовки `Host`/`Origin` и тип содержимого; из сети он недоступен. Страница не обращается к внешним ресурсам.
 
 ## Инсталлятор
 Установщик собирается [Inno Setup 6](https://jrsoftware.org/isdl.php) из Release-сборки. Скрипт: `installer/AIResumeAssistant.iss`.

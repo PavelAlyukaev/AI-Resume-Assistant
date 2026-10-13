@@ -41,6 +41,7 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-httpserver
 
       - name: Configure
         run: cmake --preset ${{ matrix.configure_preset }}
@@ -71,6 +72,7 @@ jobs:
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-httpserver
 
       - name: Ensure Inno Setup
         shell: pwsh

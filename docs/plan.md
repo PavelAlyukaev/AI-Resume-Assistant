@@ -17,7 +17,9 @@
 - [x] Qt Test сквозной тест слоя данных.
 - [x] Собрать на Windows и выполнить тесты.
 - [x] GitHub Actions CI (debug/release) и установщик Inno Setup.
-- [ ] Улучшить выбор резюме (вместо открытия по ID).
+- [x] Веб-версия UI Sprint 1: локальный HTTP-сервер на `127.0.0.1`, HTML-редактор, JSON API, тесты (`resume_json`, `web_api`).
+- [x] Проверить веб-интерфейс в браузере: e2e-тест `web_e2e` (Playwright + Chrome), скриншот `screenshots/web-e2e-sprint1.png`.
+- [ ] Улучшить выбор резюме (вместо открытия по ID) в Qt и в вебе.
 
 ## Sprint 2 — Документы и приватность
 - [ ] Импорт DOCX и текстовых PDF.

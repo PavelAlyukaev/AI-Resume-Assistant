@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 #include <QAction>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -53,6 +54,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     file->addAction("Новое", this, &MainWindow::newResume);
     file->addAction("Открыть по ID", this, &MainWindow::openResume);
     file->addAction("Сохранить", this, &MainWindow::saveResume);
+    file->addSeparator();
+    file->addAction("Открыть веб-версию", this, &MainWindow::openInBrowser);
     connect(add, &QPushButton::clicked, this, &MainWindow::addStage);
     connect(apply, &QPushButton::clicked, this, &MainWindow::updateSelectedStage);
     connect(stages_, &QListWidget::currentRowChanged, this, &MainWindow::selectStage);
@@ -60,8 +63,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     QDir().mkpath(dataDir);
     repository_ = std::make_unique<ResumeRepository>(dataDir + "/resumes.sqlite");
     QString error;
+
     if (!repository_->open(&error))
         reportError(error);
+    webServer_ = std::make_unique<WebServer>(*repository_);
+    constexpr quint16 kDefaultWebPort = 8765;
+    if (!webServer_->listen(kDefaultWebPort, &error) && !webServer_->listen(0, &error)) {
+        webServer_.reset();
+        statusBar()->showMessage("Веб-версия недоступна", 8000);
+    } else {
+        statusBar()->showMessage("Веб-версия: " + webServer_->url().toString(), 8000);
+    }
+
     newResume();
 }
 
@@ -141,4 +154,13 @@ void MainWindow::openResume() {
         selectStage(-1);
 }
 
-void MainWindow::reportError(const QString &message) { QMessageBox::critical(this, "Ошибка", message); }
+
+void MainWindow::openInBrowser() {
+    if (!webServer_) { reportError("Веб-версия не запущена"); return; }
+    QDesktopServices::openUrl(webServer_->url());
+}
+
+void MainWindow::reportError(const QString& message) {
+    QMessageBox::critical(this, "Ошибка", message);
+}
+

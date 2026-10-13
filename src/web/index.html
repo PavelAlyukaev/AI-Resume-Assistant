@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Resume Assistant — Sprint 1</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6a7385;
+  --border: #d5d9e2; --accent: #2457d6; --accent-text: #ffffff; --error: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171e; --panel: #1d222c; --text: #e6e9f0; --muted: #98a1b3;
+          --border: #343b4a; --accent: #6b93f5; --accent-text: #0f1420; --error: #f2877f; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 15px/1.45 system-ui, "Segoe UI", sans-serif; }
+main { max-width: 960px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 20px; margin: 0 0 12px; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+button { font: inherit; padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+         background: var(--panel); color: var(--text); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+input, textarea { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--border);
+                  border-radius: 6px; background: var(--panel); color: var(--text); }
+textarea { min-height: 140px; resize: vertical; }
+.cols { display: grid; grid-template-columns: 1fr 2fr; gap: 16px; margin-top: 12px; }
+@media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px;
+     background: var(--panel); min-height: 120px; }
+li { padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
+li:last-child { border-bottom: 0; }
+li.selected { background: var(--accent); color: var(--accent-text); }
+#status { margin-top: 12px; min-height: 1.4em; color: var(--muted); }
+#status.error { color: var(--error); }
+</style>
+</head>
+<body>
+<main>
+  <h1>AI Resume Assistant — Sprint 1</h1>
+  <div class="bar">
+    <button id="new">Новое</button>
+    <button id="open">Открыть по ID</button>
+    <button id="save" class="primary">Сохранить</button>
+  </div>
+  <label for="title">Название резюме</label>
+  <input id="title" maxlength="200" placeholder="Название резюме">
+  <div class="cols">
+    <div>
+      <ul id="stages"></ul>
+      <div class="bar" style="margin-top:8px"><button id="add">Добавить этап</button></div>
+    </div>
+    <div>
+      <label for="position">Должность</label>
+      <input id="position" maxlength="200">
+      <label for="company">Компания</label>
+      <input id="company" maxlength="200">
+      <label for="period">Период</label>
+      <input id="period" maxlength="200">
+      <label for="description">Описание</label>
+      <textarea id="description" maxlength="10000"></textarea>
+      <div class="bar" style="margin-top:8px"><button id="apply">Применить изменения</button></div>
+    </div>
+  </div>
+  <div id="status" role="status"></div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const fields = ["position", "company", "period", "description"];
+let resume = { id: 0, title: "", stages: [] };
+let current = -1;
+
+function setStatus(text, isError) {
+  $("status").textContent = text;
+  $("status").className = isError ? "error" : "";
+}
+
+function renderList() {
+  const list = $("stages");
+  list.replaceChildren();
+  resume.stages.forEach((stage, index) => {
+    const item = document.createElement("li");
+    item.textContent = stage.position;
+    if (index === current) item.className = "selected";
+    item.addEventListener("click", () => select(index));
+    list.appendChild(item);
+  });
+}
+
+function select(index) {
+  current = index;
+  const stage = resume.stages[index];
+  for (const name of fields) {
+    $(name).disabled = !stage;
+    $(name).value = stage ? stage[name] : "";
+  }
+  $("apply").disabled = !stage;
+  renderList();
+}
+
+function applySelected() {
+  const stage = resume.stages[current];
+  if (!stage) return;
+  for (const name of fields) stage[name] = $(name).value;
+  renderList();
+}
+
+function load(data) {
+  resume = data;
+  $("title").value = data.title;
+  select(data.stages.length ? 0 : -1);
+}
+
+async function api(method, path, body) {
+  const options = { method, headers: {} };
+  if (body !== undefined) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Ошибка " + response.status);
+  return data;
+}
+
+$("new").addEventListener("click", () => {
+  load({ id: 0, title: "Моё резюме", stages: [] });
+  setStatus("");
+});
+
+$("add").addEventListener("click", () => {
+  applySelected();
+  resume.stages.push({ id: 0, position: "Новая должность", company: "", period: "", description: "" });
+  select(resume.stages.length - 1);
+});
+
+$("apply").addEventListener("click", applySelected);
+
+$("save").addEventListener("click", async () => {
+  applySelected();
+  const payload = { title: $("title").value, stages: resume.stages };
+  try {
+    const saved = resume.id
+      ? await api("PUT", "/api/resumes/" + resume.id, payload)
+      : await api("POST", "/api/resumes", payload);
+    const keep = current;
+    load(saved);
+    if (keep >= 0 && keep < saved.stages.length) select(keep);
+    setStatus("Сохранено. ID: " + saved.id);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+$("open").addEventListener("click", async () => {
+  const answer = window.prompt("ID резюме", "1");
+  if (answer === null) return;
+  const id = Number.parseInt(answer, 10);
+  if (!Number.isSafeInteger(id) || id < 1) { setStatus("Некорректный ID", true); return; }
+  try {
+    load(await api("GET", "/api/resumes/" + id));
+    setStatus("Открыто. ID: " + id);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+load({ id: 0, title: "Моё резюме", stages: [] });
+</script>
+</body>
+</html>
