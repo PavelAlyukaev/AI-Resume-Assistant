@@ -1,0 +1,24 @@
+- main [ref=e2]:
+  - heading "AI Resume Assistant — Sprint 1" [level=1] [ref=e3]
+  - generic [ref=e4]:
+    - button "Новое" [ref=e5] [cursor=pointer]
+    - button "Открыть по ID" [ref=e6] [cursor=pointer]
+    - button "Сохранить" [ref=e7] [cursor=pointer]
+  - generic [ref=e8]: Название резюме
+  - textbox "Название резюме" [ref=e9]: Моё резюме
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - list [ref=e12]:
+        - listitem [ref=e28] [cursor=pointer]: Разработчик C++
+      - button "Добавить этап" [ref=e14] [cursor=pointer]
+    - generic [ref=e15]:
+      - generic [ref=e16]: Должность
+      - textbox "Должность" [ref=e17]: Разработчик C++
+      - generic [ref=e18]: Компания
+      - textbox "Компания" [ref=e19]: Acme
+      - generic [ref=e20]: Период
+      - textbox "Период" [ref=e21]: 2022–2024
+      - generic [ref=e22]: Описание
+      - textbox "Описание" [ref=e23]: Qt desktop
+      - button "Применить изменения" [active] [ref=e25] [cursor=pointer]
+  - status [ref=e26]
