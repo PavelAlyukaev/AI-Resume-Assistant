@@ -5,21 +5,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets Sql Test)
+find_package(Qt6 6.7 REQUIRED COMPONENTS Core Widgets Sql Network HttpServer Test)
 qt_standard_project_setup()
 add_library(resume_core STATIC
     src/domain/Resume.h
+    src/application/ResumeJson.h
+    src/application/ResumeJson.cpp
     src/storage/ResumeRepository.h
     src/storage/ResumeRepository.cpp
 )
 target_link_libraries(resume_core PUBLIC Qt6::Core Qt6::Sql)
 target_include_directories(resume_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# Local web UI: loopback-only HTTP server with the HTML front end embedded as a resource.
+add_library(resume_web STATIC
+    src/web/WebServer.h
+    src/web/WebServer.cpp
+)
+target_link_libraries(resume_web PUBLIC resume_core Qt6::Network Qt6::HttpServer)
+qt_add_resources(resume_web web_assets PREFIX "/web" BASE src/web FILES src/web/index.html)
 qt_add_executable(AIResumeAssistant WIN32
     src/main.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
 )
-target_link_libraries(AIResumeAssistant PRIVATE resume_core Qt6::Widgets)
+target_link_libraries(AIResumeAssistant PRIVATE resume_core resume_web Qt6::Widgets)
 
 # Deployment: `cmake --install` lays out a self-contained app (exe, Qt and
 # MinGW DLLs, plugins); the `installer` target packs it with Inno Setup.
@@ -68,3 +78,10 @@ qt_add_executable(resume_e2e_test tests/ResumeE2ETest.cpp)
 target_link_libraries(resume_e2e_test PRIVATE resume_core Qt6::Test)
 add_test(NAME resume_e2e COMMAND resume_e2e_test)
 set_tests_properties(resume_e2e PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+qt_add_executable(resume_json_test tests/ResumeJsonTest.cpp)
+target_link_libraries(resume_json_test PRIVATE resume_core Qt6::Test)
+add_test(NAME resume_json COMMAND resume_json_test)
+qt_add_executable(web_api_test tests/WebApiTest.cpp)
+target_link_libraries(web_api_test PRIVATE resume_web Qt6::Test)
+add_test(NAME web_api COMMAND web_api_test)
