@@ -1,6 +1,13 @@
 ---
-gsd_state_version: '1.0'
+gsd_state_version: "1.0"
+current_phase: 1
+current_phase_name: Зависимость libzip и безопасное чтение ZIP
 status: planning
+stopped_at: Phase 1 context gathered
+last_updated: "2026-10-24T07:05:01.114Z"
+last_activity: 2026-10-24
+last_activity_desc: Roadmap created (3 phases, 18/18 v1 requirements mapped)
+state_head: 789cad6a8e4ea6932174b13705ee952c13c755bb
 progress:
   total_phases: 3
   completed_phases: 0
@@ -56,6 +63,7 @@ Recent decisions affecting current work:
 - [Roadmap]: 3 горизонтальные фазы (libzip + ZIP, содержимое DOCX, Qt-окно). Порядок из исследования изменён: зависимость libzip идёт первой, потому что читатель нельзя собрать без неё
 - [Roadmap]: Сервис импорта (чтение файла по `QString`-пути, выбор обработчика) входит в Phase 2, чтобы кириллический путь проверялся без UI
 - [Roadmap]: Открытие DOCX с несохранёнными правками спрашивает подтверждение (решено пользователем); в Phase 1-2 читатель остаётся чистой функцией без доступа к черновику
+- [Owner, 2026-10-24]: SAFE-01 перенесён из Phase 1 в Phase 3 (половина про черновик не реализована в Phase 1; верификация фазы 1 — human_needed). Phase 2 пропущена по решению владельца; планы 01-01…01-03 по-прежнему объявляют SAFE-01 в frontmatter, это не исправлялось
 
 ### Pending Todos
 
@@ -63,6 +71,8 @@ None yet.
 
 ### Blockers/Concerns
 
+- [Phase 1, planning]: планы 01-01…01-04 не прошли финальную проверку `gsd-plan-checker` полностью (после 3 ревизий остались WARNING). Открыто: `docs/plan.md` не указан в `read_first` у 01-01 Task 2–3, 01-02 Task 2–3, 01-03 Task 2–3; `docs/memory.md` не указан в `read_first` у 01-01 Task 2, 01-02 Task 2, 01-03 Task 2. Исполнитель обязан прочитать оба файла перед работой по CLAUDE.md. Решение владельца: закоммитить как есть
+- [Phase 1, execution]: checkpoint 01-01 Task 1 пройден с отклонением: установлен `mingw-w64-x86_64-libzip 1.11.4-1` вместо плановой 1.12.1-1; владелец принял 1.11.4-1. Все 16 имён из плана есть в `zip.h`, цель `libzip::zip` экспортирована; фразы о владении источником после неудачного открытия нет ни в заголовке, ни в man-странице, поэтому по ветке «c» 01-01 Task 2 источник после неудачного открытия не освобождается
 - [Phase 1]: libzip не установлен и не проверен (имя пакета `mingw-w64-x86_64-libzip`, pkg-config, транзитивные DLL в `DeployMinGWRuntime.cmake`, списки установки CI). Запасной вариант: zlib/miniz за тем же интерфейсом `ZipArchive`
 - [Phase 1]: числовые лимиты (файл 10 или 20 MB, вывод 20 или 64 MB, 200k символов) в исследовании расходятся; выбрать один набор при планировании
 - [Phase 2]: поведение DTD/сущностей в `QXmlStreamReader` на Qt 6.11.1 не проверено; названия стилей заголовков в русском Word, `sdt`, объединённые ячейки проверять на фикстурах
@@ -79,6 +89,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-24
-Stopped at: Roadmap and state created; ready for `/gsd-plan-phase 1`
-Resume file: None
+Last session: 2026-10-24T07:05:01.090Z
+Stopped at: Phase 1 context gathered
+Resume file: .planning/phases/01-zavisimost-libzip-i-bezopasnoe-chtenie-zip/01-CONTEXT.md

@@ -21,6 +21,12 @@ foreach(driver IN LISTS sql_drivers)
 endforeach()
 
 file(GLOB executables "${prefix}/bin/*.exe")
+# libzip is linked only by resume_documents, so no executable imports libzip.dll and
+# GET_RUNTIME_DEPENDENCIES would never visit it; its transitive DLLs would then be left
+# out of the install. Scan libzip.dll explicitly (exact name, no version mask).
+if(EXISTS "${prefix}/bin/libzip.dll")
+    list(APPEND executables "${prefix}/bin/libzip.dll")
+endif()
 # Plugins (MSYS2 Qt puts them under share/qt6/plugins); DLLs already in bin/
 # are reached through the executable.
 file(GLOB_RECURSE plugins "${prefix}/*.dll")

@@ -42,6 +42,7 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-qt6-httpserver
+            mingw-w64-x86_64-libzip
 
       - name: Configure
         run: cmake --preset ${{ matrix.configure_preset }}
@@ -73,6 +74,7 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-qt6-base
             mingw-w64-x86_64-qt6-httpserver
+            mingw-w64-x86_64-libzip
 
       - name: Ensure Inno Setup
         shell: pwsh
@@ -99,6 +101,7 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Installer exited with $($p.ExitCode)" }
           Get-ChildItem $dir -Recurse -File | ForEach-Object { $_.FullName.Substring($dir.Length + 1) }
           if (-not (Get-ChildItem $dir -Recurse -Filter "qsqlite*.dll")) { throw "QSQLITE driver is missing" }
+          if (-not (Test-Path "$dir\bin\libzip.dll")) { throw "libzip.dll is missing from the installed bin folder" }
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           $app = Start-Process "$dir\bin\AIResumeAssistant.exe" -PassThru
           Start-Sleep -Seconds 10
