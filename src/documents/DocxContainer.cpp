@@ -43,7 +43,7 @@ QByteArray utf16LeFromAscii(std::string_view ascii) {
 
 } // namespace
 
-std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes) {
+std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes, qint64 unpackedBudget) {
     if (bytes.size() > kMaxFileBytes)
         return std::unexpected(DocxError::TooLarge);
 
@@ -61,6 +61,8 @@ std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes) {
         return std::unexpected(DocxError::NotZip);
 
     // A ZIP-prefixed input that libzip rejects is damaged, not foreign (research Pitfall 5).
+    // The code is the one ZipArchive::open reported (Limit for too many entries, Corrupt for
+    // damage or a duplicate name).
     auto opened = ZipArchive::open(std::move(bytes));
     if (!opened)
         return std::unexpected(opened.error());
@@ -71,7 +73,7 @@ std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes) {
 
     // One budget shared by the three parts in this open (D-02, as reinterpreted in
     // plan 01-02). Each read consumes what it returned.
-    qint64 remaining = kMaxUnpackedBytes;
+    qint64 remaining = unpackedBudget;
     auto readPart = [&archive, &remaining](std::string_view name) {
         auto part = archive.readEntry(name, remaining);
         if (part)

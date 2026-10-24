@@ -1,6 +1,7 @@
 #include "documents/ZipArchive.h"
 #include <algorithm>
 #include <array>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,28 @@ class ZipError {
   private:
     zip_error_t error_{};
 };
+
+// Structural checks run before any entry is read. The count comes first: more than kMaxEntries
+// entries is Limit, and no name is read at all. Then every name is read once; a name seen twice
+// is Corrupt, because a duplicate could hide which part a reader selects (T-01-14, T-01-15).
+std::expected<void, DocxError> checkEntryStructure(zip_t *archive) {
+    const zip_int64_t count = zip_get_num_entries(archive, 0);
+    if (count < 0)
+        return std::unexpected(DocxError::Corrupt);
+    if (count > kMaxEntries)
+        return std::unexpected(DocxError::Limit);
+
+    std::set<std::string> seen;
+    for (zip_int64_t i = 0; i < count; ++i) {
+        // Only the name is compared. No libzip message text is read here either (T-01-04).
+        const char *name = zip_get_name(archive, static_cast<zip_uint64_t>(i), 0);
+        if (!name)
+            return std::unexpected(DocxError::Corrupt);
+        if (!seen.insert(name).second)
+            return std::unexpected(DocxError::Corrupt);
+    }
+    return {};
+}
 
 } // namespace
 
@@ -53,6 +76,13 @@ std::expected<std::unique_ptr<ZipArchive>, DocxError> ZipArchive::open(QByteArra
     zip_t *archive = zip_open_from_source(source, ZIP_RDONLY | ZIP_CHECKCONS, error.get());
     if (!archive)
         return std::unexpected(DocxError::Corrupt);
+
+    // A refused archive is closed here. Closing it releases the source that libzip now owns,
+    // which is the case where the source was accepted by a successful open.
+    if (auto structure = checkEntryStructure(archive); !structure) {
+        zip_discard(archive);
+        return std::unexpected(structure.error());
+    }
 
     impl->archive = archive;
     return std::unique_ptr<ZipArchive>(new ZipArchive(std::move(impl)));
