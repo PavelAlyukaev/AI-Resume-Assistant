@@ -15,16 +15,31 @@ constexpr QStringView kBody = u"body";
 constexpr QStringView kParagraph = u"p";
 constexpr QStringView kText = u"t";
 
+// Encodings the OPC rule allows (OQ3, A10): UTF-8 and UTF-16 in any letter case. A document with
+// no declaration is also accepted; any other declared encoding is refused.
+constexpr QStringView kUtf8 = u"UTF-8";
+constexpr QStringView kUtf16 = u"UTF-16";
+
+bool isAcceptedEncoding(QStringView encoding) {
+    return encoding.isEmpty() || encoding.compare(kUtf8, Qt::CaseInsensitive) == 0 ||
+           encoding.compare(kUtf16, Qt::CaseInsensitive) == 0;
+}
+
 // Owns the QXmlStreamReader over one part. next() is the only read of tokens in this file.
 class PartReader {
   public:
     explicit PartReader(const QByteArray &bytes) : m_xml(bytes) { m_xml.setNamespaceProcessing(true); }
 
-    // A parser error becomes a code only; its text is never read (SAFE-05).
+    // A parser error becomes a code only; its text is never read (SAFE-05). A DOCTYPE is refused
+    // at its own token, before any entity is expanded (SAFE-03, T-02-01, T-02-02).
     std::expected<QXmlStreamReader::TokenType, DocxError> next() {
         const QXmlStreamReader::TokenType token = m_xml.readNext();
         if (m_xml.hasError())
             return std::unexpected(DocxError::Corrupt);
+        if (token == QXmlStreamReader::DTD)
+            return std::unexpected(DocxError::UnsafeXml);
+        if (token == QXmlStreamReader::StartDocument && !isAcceptedEncoding(m_xml.documentEncoding()))
+            return std::unexpected(DocxError::UnsupportedEncoding);
         return token;
     }
 
@@ -97,11 +112,33 @@ std::expected<Paragraph, DocxError> readParagraph(PartReader &reader) {
     }
 }
 
+// Protective pass over a part whose content is not read in this plan (styles, numbering; 02-02).
+// It reads to the end, so a DOCTYPE, a bad encoding or a damaged part is refused with no partial
+// result (D-07). An empty part has nothing to check.
+std::expected<void, DocxError> checkPartIsSafe(const QByteArray &bytes) {
+    if (bytes.isEmpty())
+        return {};
+    PartReader reader(bytes);
+    while (true) {
+        auto token = reader.next();
+        if (!token)
+            return std::unexpected(token.error());
+        if (*token == QXmlStreamReader::EndDocument)
+            return {};
+    }
+}
+
 } // namespace
 
 std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
     if (parts.documentXml.isEmpty())
         return std::unexpected(DocxError::Corrupt);
+
+    // The two optional parts pass the same checks before the body is read (D-10: no content used).
+    if (auto styles = checkPartIsSafe(parts.stylesXml); !styles)
+        return std::unexpected(styles.error());
+    if (auto numbering = checkPartIsSafe(parts.numberingXml); !numbering)
+        return std::unexpected(numbering.error());
 
     PartReader reader(parts.documentXml);
 

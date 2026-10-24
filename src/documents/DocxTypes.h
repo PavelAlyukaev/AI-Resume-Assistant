@@ -7,6 +7,7 @@
 // never here.
 namespace documents {
 
+// Error codes only; the Russian texts for them live in the application layer (D-04, D-05).
 enum class DocxError {
     NotZip,
     Corrupt,
@@ -15,6 +16,8 @@ enum class DocxError {
     TooLarge,
     Limit,
     MissingPart,
+    UnsafeXml,           // a DOCTYPE, with or without entities (SAFE-03)
+    UnsupportedEncoding, // a declared XML encoding other than UTF-8 or UTF-16 (OQ3)
 };
 
 // Non-fatal findings. The read still succeeds; the warnings list holds one entry per

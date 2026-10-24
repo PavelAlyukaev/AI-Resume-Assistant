@@ -55,6 +55,16 @@ QString errorText(documents::DocxError code, const QString &fileName) {
         return QStringLiteral(
                    "В файле «%1» не найден текст резюме. Сохраните его как .docx в Word и повторите.")
             .arg(fileName);
+    case documents::DocxError::UnsafeXml:
+        return QStringLiteral(
+                   "Файл «%1» содержит DTD или внешние сущности XML, поэтому не открыт из соображений "
+                   "безопасности. Сохраните резюме в Word как .docx заново и повторите.")
+            .arg(fileName);
+    case documents::DocxError::UnsupportedEncoding:
+        return QStringLiteral(
+                   "Файл «%1» записан в кодировке XML, которую приложение не читает (поддерживаются UTF-8 и "
+                   "UTF-16). Сохраните резюме в Word как .docx заново и повторите.")
+            .arg(fileName);
     }
     return {};
 }
