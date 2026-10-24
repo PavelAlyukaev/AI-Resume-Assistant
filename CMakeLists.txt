@@ -45,6 +45,10 @@ target_link_libraries(AIResumeAssistant PRIVATE resume_core resume_web Qt6::Widg
 # MinGW DLLs, plugins); the `installer` target packs it with Inno Setup.
 if(WIN32)
     install(TARGETS AIResumeAssistant RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    # No executable imports a libzip symbol in Phase 1 (only resume_documents links it, and
+    # the UI does not call it until Phase 3), so the linker records no import of libzip.dll.
+    # Install it explicitly; DeployMinGWRuntime.cmake then resolves its transitive DLLs.
+    install(IMPORTED_RUNTIME_ARTIFACTS libzip::zip RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     qt_generate_deploy_app_script(
         TARGET AIResumeAssistant
         OUTPUT_SCRIPT qt_deploy_script
