@@ -322,12 +322,12 @@ class DocumentImportTest : public QObject {
 
     void bombFromCyrillicDirectoryIsLimitWithFileNameOnly() {
         // A deflated two-mebibyte bomb: small on disk, refused by the ratio check during the read.
-        const QByteArray zeros(2 * 1024 * 1024, '\0');
+        const QByteArray zeros(qsizetype{2} * 1024 * 1024, '\0');
         const auto written = writeLibzipArchive({ZipEntry{"word/document.xml", zeros}}, QByteArray());
         if (!written)
             QFAIL(qPrintable(
                 QStringLiteral("libzip could not write the bomb fixture: %1").arg(written.error())));
-        QVERIFY2(written->size() < 64 * 1024, "the bomb fixture must be deflated");
+        QVERIFY2(written->size() < qsizetype{64} * 1024, "the bomb fixture must be deflated");
 
         QTemporaryDir root;
         QVERIFY(root.isValid());
