@@ -46,6 +46,16 @@ const documents::Paragraph *paragraphAt(const documents::DocxDocument &document,
     return std::get_if<documents::Paragraph>(&document.blocks.at(index).content);
 }
 
+// One paragraph with the text "Текст". pPrChildren are the children of its w:pPr; an empty value
+// gives a paragraph without w:pPr.
+QByteArray paragraphWithProps(const QByteArray &pPrChildren) {
+    QByteArray xml = "<w:p>";
+    if (!pPrChildren.isEmpty())
+        xml += "<w:pPr>" + pPrChildren + "</w:pPr>";
+    xml += QStringLiteral("<w:r><w:t>Текст</w:t></w:r></w:p>").toUtf8();
+    return xml;
+}
+
 // One paragraph with one run and one text element. The text is inserted as raw XML.
 QByteArray paragraphXml(const QString &text) {
     return QStringLiteral("<w:p><w:r><w:t>%1</w:t></w:r></w:p>").arg(text).toUtf8();
@@ -390,6 +400,115 @@ class DocxContentTest : public QObject {
         QVERIFY2(plain != nullptr, "the second block is a paragraph");
         QCOMPARE(plain->text, QStringLiteral("Обычный текст"));
         QCOMPARE(plain->headingLevel, 0);
+    }
+
+    // Each row is one paragraph with its w:pPr children and the styles it may refer to. The Russian
+    // name rows are synthetic (assumption A1, phase 3 checks a real Word file).
+    void headingByStyleIdNameOrOutline_data() {
+        QTest::addColumn<QByteArray>("stylesBody");
+        QTest::addColumn<QByteArray>("pPrChildren");
+        QTest::addColumn<int>("expectedLevel");
+
+        const auto pStyle = [](const QByteArray &id) {
+            return QByteArray("<w:pStyle w:val=\"") + id + "\"/>";
+        };
+        const auto styleName = [](const QByteArray &id, const QString &name) {
+            return QByteArray("<w:style w:styleId=\"") + id + "\"><w:name w:val=\"" + name.toUtf8() +
+                   "\"/></w:style>";
+        };
+
+        QTest::newRow("styleId Heading3")
+            << QByteArray("<w:style w:styleId=\"Heading3\"/>") << pStyle("Heading3") << 3;
+        QTest::newRow("name heading 4 under styleId x")
+            << styleName("x", QStringLiteral("heading 4")) << pStyle("x") << 4;
+        QTest::newRow("name is case-insensitive: HEADING 1")
+            << styleName("Up", QStringLiteral("HEADING 1")) << pStyle("Up") << 1;
+        QTest::newRow("Russian name Заголовок 2 under styleId a0")
+            << styleName("a0", QStringLiteral("Заголовок 2")) << pStyle("a0") << 2;
+        QTest::newRow("Russian name Заголовок without digit is not a heading")
+            << styleName("a1", QStringLiteral("Заголовок")) << pStyle("a1") << 0;
+        QTest::newRow("outlineLvl 2 without a heading name")
+            << QByteArray("<w:style w:styleId=\"Sec\"><w:pPr><w:outlineLvl w:val=\"2\"/></w:pPr></w:style>")
+            << pStyle("Sec") << 3;
+        QTest::newRow("Custom based on Heading2")
+            << QByteArray("<w:style w:styleId=\"Heading2\"/><w:style w:styleId=\"Custom\"><w:basedOn "
+                          "w:val=\"Heading2\"/></w:style>")
+            << pStyle("Custom") << 2;
+        QTest::newRow("styleId Heading10 is not a heading")
+            << QByteArray("<w:style w:styleId=\"Heading10\"/>") << pStyle("Heading10") << 0;
+        QTest::newRow("name heading 0 is not a heading")
+            << styleName("Zero", QStringLiteral("heading 0")) << pStyle("Zero") << 0;
+        QTest::newRow("outlineLvl 9 in the style is not a heading")
+            << QByteArray("<w:style w:styleId=\"Plain\"><w:pPr><w:outlineLvl w:val=\"9\"/></w:pPr></w:style>")
+            << pStyle("Plain") << 0;
+        QTest::newRow("name Title is not a heading")
+            << styleName("Title", QStringLiteral("Title")) << pStyle("Title") << 0;
+        QTest::newRow("direct outlineLvl 0 on a paragraph without style")
+            << QByteArray() << QByteArray("<w:outlineLvl w:val=\"0\"/>") << 1;
+        QTest::newRow("direct outlineLvl 9 beats the Heading2 style")
+            << QByteArray("<w:style w:styleId=\"Heading2\"/>")
+            << QByteArray("<w:pStyle w:val=\"Heading2\"/><w:outlineLvl w:val=\"9\"/>") << 0;
+        QTest::newRow("outlineLvl 9 in the style beats basedOn Heading2")
+            << QByteArray("<w:style w:styleId=\"Heading2\"/><w:style w:styleId=\"Custom\"><w:basedOn "
+                          "w:val=\"Heading2\"/><w:pPr><w:outlineLvl w:val=\"9\"/></w:pPr></w:style>")
+            << pStyle("Custom") << 0;
+    }
+
+    void headingByStyleIdNameOrOutline() {
+        QFETCH(QByteArray, stylesBody);
+        QFETCH(QByteArray, pPrChildren);
+        QFETCH(int, expectedLevel);
+
+        auto result =
+            documents::readDocxContent(partsWithStyles(paragraphWithProps(pPrChildren), stylesBody));
+        QVERIFY2(result.has_value(), "a single paragraph with styles must parse");
+        const documents::Paragraph *paragraph = paragraphAt(*result, 0);
+        QVERIFY2(paragraph != nullptr, "the block is a paragraph");
+        QCOMPARE(paragraph->text, QStringLiteral("Текст"));
+        QCOMPARE(paragraph->headingLevel, expectedLevel);
+    }
+
+    void cyclicBasedOnTerminates() {
+        // A is based on B and B on A: the walk ends after both styles, with no heading and no error.
+        const QByteArray styles =
+            QStringLiteral("<w:style w:styleId=\"A\"><w:basedOn w:val=\"B\"/></w:style>"
+                           "<w:style w:styleId=\"B\"><w:basedOn w:val=\"A\"/></w:style>")
+                .toUtf8();
+        auto result = documents::readDocxContent(
+            partsWithStyles(paragraphWithProps("<w:pStyle w:val=\"A\"/>"), styles));
+        QVERIFY2(result.has_value(), "a cycle in basedOn is bad style data, not an error");
+        const documents::Paragraph *paragraph = paragraphAt(*result, 0);
+        QVERIFY2(paragraph != nullptr, "the block is a paragraph");
+        QCOMPARE(paragraph->text, QStringLiteral("Текст"));
+        QCOMPARE(paragraph->headingLevel, 0);
+    }
+
+    void styleChainDepthIsBounded() {
+        // A chain of styles S0..S(n-1) based on each other; the last one is a heading named "heading 2".
+        // The chain is followed up to kMaxStyleChainDepth (16) styles, so the heading is reached at 10
+        // styles and not at 20.
+        const auto chainOf = [](int count) {
+            QByteArray styles;
+            for (int i = 0; i + 1 < count; ++i)
+                styles += "<w:style w:styleId=\"S" + QByteArray::number(i) + "\"><w:basedOn w:val=\"S" +
+                          QByteArray::number(i + 1) + "\"/></w:style>";
+            styles += "<w:style w:styleId=\"S" + QByteArray::number(count - 1) +
+                      "\"><w:name w:val=\"heading 2\"/></w:style>";
+            return styles;
+        };
+        const QByteArray paragraph = paragraphWithProps("<w:pStyle w:val=\"S0\"/>");
+
+        auto shallow = documents::readDocxContent(partsWithStyles(paragraph, chainOf(10)));
+        QVERIFY2(shallow.has_value(), "a chain of 10 styles must parse");
+        const documents::Paragraph *shallowParagraph = paragraphAt(*shallow, 0);
+        QVERIFY2(shallowParagraph != nullptr, "the block is a paragraph");
+        QCOMPARE(shallowParagraph->headingLevel, 2);
+
+        auto deep = documents::readDocxContent(partsWithStyles(paragraph, chainOf(20)));
+        QVERIFY2(deep.has_value(), "a chain of 20 styles must parse");
+        const documents::Paragraph *deepParagraph = paragraphAt(*deep, 0);
+        QVERIFY2(deepParagraph != nullptr, "the block is a paragraph");
+        QCOMPARE(deepParagraph->headingLevel, 0);
     }
 };
 

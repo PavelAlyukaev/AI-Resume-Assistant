@@ -3,6 +3,7 @@
 #include <QStringView>
 #include <QXmlStreamReader>
 #include <expected>
+#include <optional>
 #include <utility>
 
 namespace documents {
@@ -223,22 +224,91 @@ std::expected<StyleTable, DocxError> readStyles(const QByteArray &bytes) {
     return styles;
 }
 
-// Heading number from the text after "Heading" in a styleId: exactly one digit 1-9, otherwise 0.
+// Heading number that follows the word part of a styleId or a name: exactly one digit 1-9, otherwise
+// 0. The match is exact: "heading 10" and "Заголовок" without a digit are not headings.
 int headingDigit(QStringView text) {
     if (text.size() != 1 || text.front() < u'1' || text.front() > u'9')
         return 0;
     return text.front().unicode() - u'0';
 }
 
-// Task 1 rule: the paragraph's styleId names a style of the table and is "Heading" plus one digit.
-// Task 2 replaces this with the full order (direct outlineLvl, basedOn chain, name, outline level).
-int headingLevel(const ParagraphProps &props, const StyleTable &styles) {
-    if (props.styleId.isEmpty() || !styles.contains(props.styleId))
-        return 0;
-    const QStringView styleId = props.styleId;
+// Longest basedOn chain that is followed (T-02-06). A deeper chain is cut at this many styles.
+constexpr int kMaxStyleChainDepth = 16;
+
+// Styles of the chain that starts at startId: the style itself, then the style it is based on, and
+// so on. The walk ends at a missing style, at kMaxStyleChainDepth styles, or at a style that is
+// already in the chain. A cycle in basedOn is bad style data, not broken markup, so it ends the
+// walk without an error.
+QList<const StyleInfo *> styleChain(const StyleTable &styles, QString startId) {
+    QList<const StyleInfo *> chain;
+    QString id = std::move(startId);
+    while (!id.isEmpty() && chain.size() < kMaxStyleChainDepth) {
+        const auto found = styles.constFind(id);
+        if (found == styles.constEnd())
+            break;
+        const StyleInfo *style = &found.value();
+        if (chain.contains(style))
+            break;
+        chain.append(style);
+        id = style->basedOn;
+    }
+    return chain;
+}
+
+// Heading level from a styleId: "Heading" followed by one digit 1-9 (the English internal id), else 0.
+int headingFromStyleId(QStringView styleId) {
     if (!styleId.startsWith(u"Heading"))
         return 0;
     return headingDigit(styleId.sliced(7));
+}
+
+// Heading level from a style name, compared in lower case: "heading N" (English internal name) or
+// "Заголовок N" (Russian). Assumption A1: the Russian form is checked only with synthetic fixtures.
+int headingFromName(const QString &name) {
+    const QString lower = name.toLower();
+    const QStringView text = lower;
+    if (text.startsWith(u"heading "))
+        return headingDigit(text.sliced(8));
+    if (text.startsWith(u"заголовок "))
+        return headingDigit(text.sliced(10));
+    return 0;
+}
+
+// Heading level from an outline level: 0-8 gives the level plus one, and 9 means "not a heading",
+// which gives 0. nullopt when the outline level is absent, so the search goes on.
+std::optional<int> headingFromOutline(int outlineLevel) {
+    if (outlineLevel < 0)
+        return std::nullopt;
+    if (outlineLevel == 9)
+        return 0;
+    return outlineLevel + 1;
+}
+
+// The answer of one style in the chain: a level 1-9, 0 for "not a heading" (outline level 9), or
+// nullopt when the style does not decide, so the next style in the chain is asked.
+std::optional<int> headingOfStyle(const StyleInfo &style) {
+    if (const int byId = headingFromStyleId(style.styleId); byId > 0)
+        return byId;
+    if (const int byName = headingFromName(style.name); byName > 0)
+        return byName;
+    return headingFromOutline(style.outlineLevel);
+}
+
+// Heading level of a paragraph (DOCX-03). The checks run in this order:
+// 1. the paragraph's own w:outlineLvl: 0-8 gives the level plus one, 9 gives 0 (direct formatting wins);
+// 2. the chain of its style, one style at a time: styleId, then name, then outlineLvl; the first style
+//    that decides wins, and a style with outline level 9 decides 0;
+// 3. otherwise 0.
+// Assumption A1 (02-RESEARCH.md): the Russian name "Заголовок N" is checked only with synthetic
+// fixtures in this plan. A check on a file saved by Word is planned for phase 3 (TEST-02).
+int headingLevel(const ParagraphProps &props, const StyleTable &styles) {
+    if (const auto direct = headingFromOutline(props.outlineLevel))
+        return *direct;
+    for (const StyleInfo *style : styleChain(styles, props.styleId)) {
+        if (const auto decided = headingOfStyle(*style))
+            return *decided;
+    }
+    return 0;
 }
 
 // Running totals for one readDocxContent call. They are not per paragraph: text and nodes of
