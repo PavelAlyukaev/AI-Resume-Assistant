@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### Phase 1: Зависимость libzip и безопасное чтение ZIP
 **Goal**: DOCX-файл можно безопасно открыть как ZIP-контейнер, а libzip собирается на ПК разработчика, в CI и в развёрнутой папке приложения
 **Depends on**: Nothing (first phase)
-**Requirements**: SAFE-01, SAFE-02
+**Requirements**: SAFE-02
 **Success Criteria** (what must be TRUE):
   1. Проект с подключённым libzip собирается (`cmake --build --preset debug`) и проходит `ctest --preset debug` с нуля, а списки установки пакетов в CI содержат libzip
   2. Приложение, установленное через `cmake --install` в чистую папку, запускается без ошибок об отсутствующих DLL (libzip и его транзитивные DLL развёрнуты)
@@ -51,7 +51,7 @@ Plans:
 ### Phase 3: Открытие DOCX в окне Qt
 **Goal**: Пользователь открывает DOCX из окна приложения и видит его текст в предпросмотре только для чтения, не рискуя несохранёнными правками и не видя приватных данных в ошибках
 **Depends on**: Phase 2
-**Requirements**: DOCX-01, UI-01, UI-02, UI-03, TEST-02
+**Requirements**: DOCX-01, SAFE-01, UI-01, UI-02, UI-03, TEST-02
 **Success Criteria** (what must be TRUE):
   1. Пользователь выбирает `.docx` через диалог (в том числе с кириллицей в пути) и видит в окне текст с заголовками, списками и таблицами в порядке документа
   2. Если в окне есть несохранённые правки, перед заменой появляется запрос подтверждения; отказ оставляет черновик без изменений

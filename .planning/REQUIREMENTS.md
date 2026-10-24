@@ -75,7 +75,7 @@
 | DOCX-06 | Phase 2 | Pending |
 | DOCX-07 | Phase 2 | Pending |
 | DOCX-08 | Phase 2 | Pending |
-| SAFE-01 | Phase 1 | Pending |
+| SAFE-01 | Phase 3 | Pending |
 | SAFE-02 | Phase 1 | Pending |
 | SAFE-03 | Phase 2 | Pending |
 | SAFE-04 | Phase 2 | Pending |
