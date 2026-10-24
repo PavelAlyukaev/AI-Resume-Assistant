@@ -1,4 +1,5 @@
 #include "documents/ZipArchive.h"
+#include "documents/DocxContainer.h"
 #include <QtTest>
 #include <string>
 
@@ -176,6 +177,46 @@ class ZipArchiveTest : public QObject {
             documents::ZipArchive::open(QByteArrayLiteral("This is plain text, not a ZIP archive."));
         QVERIFY(!fromText.has_value());
         QCOMPARE(static_cast<int>(fromText.error()), static_cast<int>(documents::DocxError::Corrupt));
+    }
+
+    void docxPartsReadDocumentStylesAndNumbering() {
+        const QByteArray doc = QStringLiteral("<w:document>Резюме</w:document>").toUtf8();
+        const QByteArray styles = QStringLiteral("<w:styles>Стили</w:styles>").toUtf8();
+        const QByteArray numbering = QStringLiteral("<w:numbering>Нумерация</w:numbering>").toUtf8();
+        const QByteArray zip = buildStoredZip({
+            ZipEntry{"word/document.xml", doc},
+            ZipEntry{"word/styles.xml", styles},
+            ZipEntry{"word/numbering.xml", numbering},
+        });
+
+        auto parts = documents::readDocxParts(zip);
+        QVERIFY2(parts.has_value(), "a ZIP with the three parts must read");
+        QCOMPARE(parts->documentXml, doc);
+        QCOMPARE(parts->stylesXml, styles);
+        QCOMPARE(parts->numberingXml, numbering);
+        QVERIFY(parts->warnings.isEmpty());
+    }
+
+    void plainTextIsNotZip() {
+        auto parts = documents::readDocxParts(QStringLiteral("Резюме: инженер, опыт 5 лет").toUtf8());
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::NotZip));
+    }
+
+    void missingStylesAndNumberingGiveWarnings() {
+        const QByteArray doc = QByteArrayLiteral("<w:document>only body</w:document>");
+        auto parts = documents::readDocxParts(buildStoredZip({ZipEntry{"word/document.xml", doc}}));
+        QVERIFY2(parts.has_value(), "a ZIP with only the document part must read");
+        QCOMPARE(parts->documentXml, doc);
+        QVERIFY(parts->stylesXml.isEmpty());
+        QVERIFY(parts->numberingXml.isEmpty());
+
+        // One warning per missing optional part: the list size is the count (D-08, D-09).
+        QCOMPARE(static_cast<int>(parts->warnings.size()), 2);
+        QCOMPARE(static_cast<int>(parts->warnings.at(0)),
+                 static_cast<int>(documents::DocxWarning::StylesPartMissing));
+        QCOMPARE(static_cast<int>(parts->warnings.at(1)),
+                 static_cast<int>(documents::DocxWarning::NumberingPartMissing));
     }
 };
 

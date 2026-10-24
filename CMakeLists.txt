@@ -23,6 +23,8 @@ add_library(resume_documents STATIC
     src/documents/DocxTypes.h
     src/documents/ZipArchive.h
     src/documents/ZipArchive.cpp
+    src/documents/DocxContainer.h
+    src/documents/DocxContainer.cpp
 )
 target_link_libraries(resume_documents PUBLIC Qt6::Core libzip::zip)
 target_include_directories(resume_documents PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
