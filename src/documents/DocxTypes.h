@@ -25,6 +25,7 @@ enum class DocxError {
 enum class DocxWarning {
     StylesPartMissing,
     NumberingPartMissing,
+    ListFormatApproximated, // a list whose number format is shown as a plain "N." (OQ5); one per numId
 };
 
 // Units: "MB" in D-01 and D-02 is read as MiB (1024 * 1024 bytes). Owner confirmation pending.

@@ -56,6 +56,78 @@ QByteArray paragraphWithProps(const QByteArray &pPrChildren) {
     return xml;
 }
 
+// The w:numPr of one paragraph: its level and its numId.
+QByteArray numPrXml(int ilvl, int numId) {
+    return "<w:numPr><w:ilvl w:val=\"" + QByteArray::number(ilvl) + "\"/><w:numId w:val=\"" +
+           QByteArray::number(numId) + "\"/></w:numPr>";
+}
+
+// One w:lvl. The start, pStyle and lvlText children are written only when the value is not empty.
+QByteArray levelXml(int ilvl, const QByteArray &numFmt, const QByteArray &lvlText = {},
+                    const QByteArray &pStyle = {}, const QByteArray &start = {}) {
+    QByteArray xml = "<w:lvl w:ilvl=\"" + QByteArray::number(ilvl) + "\">";
+    if (!start.isEmpty())
+        xml += "<w:start w:val=\"" + start + "\"/>";
+    xml += "<w:numFmt w:val=\"" + numFmt + "\"/>";
+    if (!pStyle.isEmpty())
+        xml += "<w:pStyle w:val=\"" + pStyle + "\"/>";
+    if (!lvlText.isEmpty())
+        xml += "<w:lvlText w:val=\"" + lvlText + "\"/>";
+    return xml + "</w:lvl>";
+}
+
+// A w:abstractNum with the given levels.
+QByteArray abstractNumXml(int abstractId, const QByteArray &levels) {
+    return "<w:abstractNum w:abstractNumId=\"" + QByteArray::number(abstractId) + "\">" + levels +
+           "</w:abstractNum>";
+}
+
+// A w:num that maps numId to abstractId.
+QByteArray numXml(int numId, int abstractId) {
+    return "<w:num w:numId=\"" + QByteArray::number(numId) + "\"><w:abstractNumId w:val=\"" +
+           QByteArray::number(abstractId) + "\"/></w:num>";
+}
+
+// Nine levels (0 to 8) of one format; lvlText is written on each level when it is not empty.
+QByteArray nineLevels(const QByteArray &numFmt, const QByteArray &lvlText = {}) {
+    QByteArray levels;
+    for (int ilvl = 0; ilvl < 9; ++ilvl)
+        levels += levelXml(ilvl, numFmt, lvlText);
+    return levels;
+}
+
+// Synthetic word/numbering.xml around the given abstractNum and num elements.
+QByteArray wrapNumbering(const QByteArray &numberingBody) {
+    return QByteArrayLiteral(
+               "<w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">") +
+           numberingBody + QByteArrayLiteral("</w:numbering>");
+}
+
+// Parts with word/document.xml, word/numbering.xml and word/styles.xml (styles may be empty).
+documents::DocxParts partsWithLists(const QByteArray &bodyXml, const QByteArray &numberingBody,
+                                    const QByteArray &stylesBody = {}) {
+    documents::DocxParts parts;
+    parts.documentXml = wrapBody(bodyXml);
+    parts.numberingXml = wrapNumbering(numberingBody);
+    parts.stylesXml = wrapStyles(stylesBody);
+    return parts;
+}
+
+// numId 1: bullets on nine levels. numId 2: decimal "N." on nine levels.
+QByteArray bulletAndDecimalNumbering() {
+    return abstractNumXml(0, nineLevels("bullet")) + abstractNumXml(1, nineLevels("decimal", "%1.")) +
+           numXml(1, 0) + numXml(2, 1);
+}
+
+// numId 1 to 5, one level each: lowerLetter, upperRoman, decimal "%1.", decimal "%1)", bullet with a
+// text that is not a bullet character. Only numIds 3 and 5 are reproduced exactly.
+QByteArray mixedFormatsNumbering() {
+    return abstractNumXml(0, levelXml(0, "lowerLetter")) + abstractNumXml(1, levelXml(0, "upperRoman")) +
+           abstractNumXml(2, levelXml(0, "decimal", "%1.")) +
+           abstractNumXml(3, levelXml(0, "decimal", "%1)")) + abstractNumXml(4, levelXml(0, "bullet", "x")) +
+           numXml(1, 0) + numXml(2, 1) + numXml(3, 2) + numXml(4, 3) + numXml(5, 4);
+}
+
 // One paragraph with one run and one text element. The text is inserted as raw XML.
 QByteArray paragraphXml(const QString &text) {
     return QStringLiteral("<w:p><w:r><w:t>%1</w:t></w:r></w:p>").arg(text).toUtf8();
@@ -509,6 +581,154 @@ class DocxContentTest : public QObject {
         const documents::Paragraph *deepParagraph = paragraphAt(*deep, 0);
         QVERIFY2(deepParagraph != nullptr, "the block is a paragraph");
         QCOMPARE(deepParagraph->headingLevel, 0);
+    }
+
+    void listsKeepKindAndLevel_data() {
+        QTest::addColumn<QByteArray>("numPr");
+        QTest::addColumn<int>("expectedLevel");
+        QTest::addColumn<bool>("expectBullet");
+        QTest::addColumn<QString>("expectedMarker");
+
+        const QString bullet(QChar(0x2022));
+        QTest::newRow("bullet level 0") << numPrXml(0, 1) << 0 << true << bullet;
+        QTest::newRow("bullet level 1") << numPrXml(1, 1) << 1 << true << bullet;
+        QTest::newRow("bullet level 2") << numPrXml(2, 1) << 2 << true << bullet;
+        QTest::newRow("ilvl above 8 is level 8") << numPrXml(12, 1) << 8 << true << bullet;
+        QTest::newRow("negative ilvl is level 0")
+            << QByteArray("<w:numPr><w:ilvl w:val=\"-3\"/><w:numId w:val=\"1\"/></w:numPr>") << 0 << true
+            << bullet;
+        QTest::newRow("numId 0 is not a list") << numPrXml(0, 0) << -1 << false << QString();
+        QTest::newRow("numId missing from numbering is not a list")
+            << numPrXml(0, 7) << -1 << false << QString();
+        QTest::newRow("decimal level 0 is numbered 1.")
+            << numPrXml(0, 2) << 0 << false << QStringLiteral("1.");
+    }
+
+    void listsKeepKindAndLevel() {
+        QFETCH(QByteArray, numPr);
+        QFETCH(int, expectedLevel);
+        QFETCH(bool, expectBullet);
+        QFETCH(QString, expectedMarker);
+
+        auto result = documents::readDocxContent(
+            partsWithLists(paragraphWithProps(numPr), bulletAndDecimalNumbering()));
+        QVERIFY2(result.has_value(), "a list paragraph must parse");
+        const documents::Paragraph *paragraph = paragraphAt(*result, 0);
+        QVERIFY2(paragraph != nullptr, "the block is a paragraph");
+        QCOMPARE(paragraph->text, QStringLiteral("Текст"));
+        QCOMPARE(paragraph->listLevel, expectedLevel);
+        QCOMPARE(paragraph->listMarker, expectedMarker);
+        if (expectedLevel >= 0)
+            QCOMPARE(paragraph->listKind == documents::ListKind::Bullet, expectBullet);
+    }
+
+    void numberedCountersRestartOnHigherLevel() {
+        // Levels 0, 1, 1, 0, 1 of one decimal list give the markers 1., 1., 2., 2., 1.
+        const QByteArray body = paragraphWithProps(numPrXml(0, 2)) + paragraphWithProps(numPrXml(1, 2)) +
+                                paragraphWithProps(numPrXml(1, 2)) + paragraphWithProps(numPrXml(0, 2)) +
+                                paragraphWithProps(numPrXml(1, 2));
+        auto result = documents::readDocxContent(partsWithLists(body, bulletAndDecimalNumbering()));
+        QVERIFY2(result.has_value(), "a numbered list must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{5});
+
+        const QStringList expected = {QStringLiteral("1."), QStringLiteral("1."), QStringLiteral("2."),
+                                      QStringLiteral("2."), QStringLiteral("1.")};
+        for (qsizetype i = 0; i < result->blocks.size(); ++i) {
+            const documents::Paragraph *paragraph = paragraphAt(*result, i);
+            QVERIFY2(paragraph != nullptr, "every block is a paragraph");
+            QCOMPARE(paragraph->listMarker, expected.at(i));
+        }
+    }
+
+    void styleNumPrLevelFromPStyle() {
+        // ListHeader carries numId 3 without an ilvl. Level 1 of abstract 2 names ListHeader in its
+        // w:pStyle, so the paragraph with that style is at level 1. A paragraph with its own numPr
+        // (no pStyle) at ilvl 0 is at level 0.
+        const QByteArray styles =
+            QStringLiteral(
+                "<w:style w:styleId=\"ListHeader\"><w:pPr><w:numPr><w:numId w:val=\"3\"/></w:numPr>"
+                "</w:pPr></w:style>")
+                .toUtf8();
+        const QByteArray numbering =
+            abstractNumXml(2, levelXml(0, "decimal", "%1.") + levelXml(1, "decimal", {}, "ListHeader")) +
+            numXml(3, 2);
+        const QByteArray body =
+            paragraphWithProps("<w:pStyle w:val=\"ListHeader\"/>") + paragraphWithProps(numPrXml(0, 3));
+        auto result = documents::readDocxContent(partsWithLists(body, numbering, styles));
+        QVERIFY2(result.has_value(), "a list taken from a style must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{2});
+
+        const documents::Paragraph *fromStyle = paragraphAt(*result, 0);
+        QVERIFY2(fromStyle != nullptr, "the first block is a paragraph");
+        QCOMPARE(fromStyle->listLevel, 1);
+        QVERIFY(fromStyle->listKind == documents::ListKind::Ordered);
+        QCOMPARE(fromStyle->listMarker, QStringLiteral("1."));
+
+        const documents::Paragraph *own = paragraphAt(*result, 1);
+        QVERIFY2(own != nullptr, "the second block is a paragraph");
+        QCOMPARE(own->listLevel, 0);
+        QCOMPARE(own->listMarker, QStringLiteral("1."));
+    }
+
+    void numberingStartClamped() {
+        // Start -5 becomes 1; 2000000000 becomes 1000000; 3 stays 3.
+        const QByteArray numbering = abstractNumXml(0, levelXml(0, "decimal", "%1.", {}, "-5")) +
+                                     abstractNumXml(1, levelXml(0, "decimal", "%1.", {}, "2000000000")) +
+                                     abstractNumXml(2, levelXml(0, "decimal", "%1.", {}, "3")) +
+                                     numXml(1, 0) + numXml(2, 1) + numXml(3, 2);
+        const QByteArray body = paragraphWithProps(numPrXml(0, 1)) + paragraphWithProps(numPrXml(0, 2)) +
+                                paragraphWithProps(numPrXml(0, 3));
+        auto result = documents::readDocxContent(partsWithLists(body, numbering));
+        QVERIFY2(result.has_value(), "start values outside the range must still parse");
+        QCOMPARE(result->blocks.size(), qsizetype{3});
+
+        const QStringList expected = {QStringLiteral("1."), QStringLiteral("1000000."), QStringLiteral("3.")};
+        for (qsizetype i = 0; i < result->blocks.size(); ++i) {
+            const documents::Paragraph *paragraph = paragraphAt(*result, i);
+            QVERIFY2(paragraph != nullptr, "every block is a paragraph");
+            QCOMPARE(paragraph->listMarker, expected.at(i));
+        }
+    }
+
+    void unsupportedNumberingFormatCountedOncePerList_data() {
+        QTest::addColumn<int>("firstNumId");
+        QTest::addColumn<int>("secondNumId");
+        QTest::addColumn<int>("expectedWarnings");
+        QTest::addColumn<QString>("firstMarker");
+        QTest::addColumn<QString>("secondMarker");
+
+        const QString bullet(QChar(0x2022));
+        QTest::newRow("lowerLetter: one warning for the list, markers 1. and 2.")
+            << 1 << 1 << 1 << QStringLiteral("1.") << QStringLiteral("2.");
+        QTest::newRow("lowerLetter and upperRoman are two lists: two warnings")
+            << 1 << 2 << 2 << QStringLiteral("1.") << QStringLiteral("1.");
+        QTest::newRow("decimal with %1. is exact: no warning")
+            << 3 << 3 << 0 << QStringLiteral("1.") << QStringLiteral("2.");
+        QTest::newRow("decimal with %1) is approximated: one warning, no parenthesis in the marker")
+            << 4 << 4 << 1 << QStringLiteral("1.") << QStringLiteral("2.");
+        QTest::newRow("bullet with any lvlText is exact: no warning") << 5 << 5 << 0 << bullet << bullet;
+    }
+
+    void unsupportedNumberingFormatCountedOncePerList() {
+        QFETCH(int, firstNumId);
+        QFETCH(int, secondNumId);
+        QFETCH(int, expectedWarnings);
+        QFETCH(QString, firstMarker);
+        QFETCH(QString, secondMarker);
+
+        const QByteArray body =
+            paragraphWithProps(numPrXml(0, firstNumId)) + paragraphWithProps(numPrXml(0, secondNumId));
+        auto result = documents::readDocxContent(partsWithLists(body, mixedFormatsNumbering()));
+        QVERIFY2(result.has_value(), "unsupported formats are approximated, not refused");
+        QCOMPARE(result->warnings.count(documents::DocxWarning::ListFormatApproximated),
+                 qsizetype{expectedWarnings});
+
+        const documents::Paragraph *first = paragraphAt(*result, 0);
+        QVERIFY2(first != nullptr, "the first block is a paragraph");
+        QCOMPARE(first->listMarker, firstMarker);
+        const documents::Paragraph *second = paragraphAt(*result, 1);
+        QVERIFY2(second != nullptr, "the second block is a paragraph");
+        QCOMPARE(second->listMarker, secondMarker);
     }
 };
 

@@ -1,7 +1,10 @@
 #include "documents/DocxContent.h"
 #include <QHash>
+#include <QSet>
 #include <QStringView>
 #include <QXmlStreamReader>
+#include <array>
+#include <cstddef>
 #include <expected>
 #include <optional>
 #include <utility>
@@ -18,17 +21,39 @@ constexpr QStringView kParagraph = u"p";
 constexpr QStringView kParagraphProperties = u"pPr";
 constexpr QStringView kParagraphStyle = u"pStyle";
 constexpr QStringView kOutlineLevel = u"outlineLvl";
+constexpr QStringView kNumPr = u"numPr";
+constexpr QStringView kNumId = u"numId";
+constexpr QStringView kIlvl = u"ilvl";
 constexpr QStringView kText = u"t";
 constexpr QStringView kStyle = u"style";
 constexpr QStringView kStyleId = u"styleId";
 constexpr QStringView kStyleName = u"name";
 constexpr QStringView kBasedOn = u"basedOn";
+constexpr QStringView kAbstractNum = u"abstractNum";
+constexpr QStringView kAbstractNumId = u"abstractNumId";
+constexpr QStringView kNum = u"num";
+constexpr QStringView kLevel = u"lvl";
+constexpr QStringView kStart = u"start";
+constexpr QStringView kNumFmt = u"numFmt";
+constexpr QStringView kLvlText = u"lvlText";
 constexpr QStringView kValue = u"val";
+constexpr QStringView kBullet = u"bullet";
+constexpr QStringView kDecimal = u"decimal";
+constexpr QStringView kDecimalLvlText = u"%1.";
 
 // Encodings the OPC rule allows (OQ3, A10): UTF-8 and UTF-16 in any letter case. A document with
 // no declaration is also accepted; any other declared encoding is refused.
 constexpr QStringView kUtf8 = u"UTF-8";
 constexpr QStringView kUtf16 = u"UTF-16";
+
+// Nine list levels, w:ilvl 0 to 8 (ISO/IEC 29500-1).
+constexpr int kListLevels = 9;
+
+// Largest start value kept for a numbered level; a larger one is replaced by it (T-02-07).
+constexpr qint64 kMaxListStart = 1000000;
+
+// Marker of a bullet level: U+2022. The text of w:lvlText is never copied as a marker (A5).
+constexpr char16_t kBulletCharacter = u'•';
 
 bool isAcceptedEncoding(QStringView encoding) {
     return encoding.isEmpty() || encoding.compare(kUtf8, Qt::CaseInsensitive) == 0 ||
@@ -144,11 +169,52 @@ std::expected<void, DocxError> readToEnd(PartReader &reader) {
     }
 }
 
-// The paragraph properties this plan reads from w:pPr: the style id of the paragraph and the
-// outline level set in the element itself. The same record holds the values of a style's w:pPr.
+// Heading number that follows the word part of a styleId or a name: exactly one digit 1-9, otherwise
+// 0. The match is exact: "heading 10" and "Заголовок" without a digit are not headings.
+int headingDigit(QStringView text) {
+    if (text.size() != 1 || text.front() < u'1' || text.front() > u'9')
+        return 0;
+    return text.front().unicode() - u'0';
+}
+
+// The reference of a w:numPr: the numId (absent when it is not a number) and the level.
+struct NumPr {
+    std::optional<qint64> numId;
+    int ilvl = 0; // 0 when absent or not a number, 8 at most (T-02-07)
+};
+
+// w:ilvl of a numPr: 0 when absent, not a number or negative; 8 when above 8.
+int readIlvl(const QString &text) {
+    bool ok = false;
+    const qint64 value = text.toLongLong(&ok);
+    if (!ok || value < 0)
+        return 0;
+    return value > kListLevels - 1 ? kListLevels - 1 : static_cast<int>(value);
+}
+
+// Reads w:numPr right after its StartElement: w:numId and w:ilvl, both with w:val.
+std::expected<void, DocxError> readNumPr(PartReader &reader, NumPr &numPr) {
+    return forEachChild(reader, [&numPr](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kNumId)) {
+            bool ok = false;
+            const qint64 value = wmlAttribute(child.xml(), kValue).toLongLong(&ok);
+            if (ok)
+                numPr.numId = value;
+            else
+                numPr.numId.reset();
+        } else if (isWml(child.xml(), kIlvl)) {
+            numPr.ilvl = readIlvl(wmlAttribute(child.xml(), kValue));
+        }
+        return skipElement(child);
+    });
+}
+
+// The paragraph properties this plan reads from w:pPr: the style id, the outline level and the
+// numbering reference set in the element itself. The same record holds the values of a style's w:pPr.
 struct ParagraphProps {
-    QString styleId;       // w:pStyle, empty when absent
-    int outlineLevel = -1; // w:outlineLvl, -1 when absent or outside 0..9
+    QString styleId;            // w:pStyle, empty when absent
+    int outlineLevel = -1;      // w:outlineLvl, -1 when absent or outside 0..9
+    std::optional<NumPr> numPr; // w:numPr, absent when the element is not there
 };
 
 // Reads w:pPr right after its StartElement. Only direct children are read: w:pPrChange (earlier
@@ -161,17 +227,24 @@ std::expected<void, DocxError> readParagraphProps(PartReader &reader, ParagraphP
             bool ok = false;
             const int level = wmlAttribute(child.xml(), kValue).toInt(&ok);
             props.outlineLevel = ok && level >= 0 && level <= 9 ? level : -1;
+        } else if (isWml(child.xml(), kNumPr)) {
+            NumPr numPr;
+            if (auto read = readNumPr(child, numPr); !read)
+                return read;
+            props.numPr = numPr;
+            return {};
         }
         return skipElement(child);
     });
 }
 
-// One w:style of word/styles.xml: the fields this plan reads (02-RESEARCH.md, Pattern 3).
+// One w:style of word/styles.xml: the fields this plan reads (02-RESEARCH.md, Pattern 3 and 4).
 struct StyleInfo {
     QString styleId;
-    QString name;          // w:name, empty when absent
-    QString basedOn;       // w:basedOn, empty when absent
-    int outlineLevel = -1; // w:pPr/w:outlineLvl, -1 when absent or outside 0..9
+    QString name;                // w:name, empty when absent
+    QString basedOn;             // w:basedOn, empty when absent
+    int outlineLevel = -1;       // w:pPr/w:outlineLvl, -1 when absent or outside 0..9
+    std::optional<qint64> numId; // w:pPr/w:numPr/w:numId; the level of that numPr is ignored (A13)
 };
 
 // Styles by styleId. A part is read once, before the body, so this table is complete when used.
@@ -192,6 +265,8 @@ std::expected<void, DocxError> readStyle(PartReader &reader, StyleTable &styles)
             if (auto read = readParagraphProps(child, props); !read)
                 return read;
             style.outlineLevel = props.outlineLevel;
+            if (props.numPr)
+                style.numId = props.numPr->numId;
             return {};
         }
         return skipElement(child);
@@ -222,14 +297,6 @@ std::expected<StyleTable, DocxError> readStyles(const QByteArray &bytes) {
     if (auto end = readToEnd(reader); !end)
         return std::unexpected(end.error());
     return styles;
-}
-
-// Heading number that follows the word part of a styleId or a name: exactly one digit 1-9, otherwise
-// 0. The match is exact: "heading 10" and "Заголовок" without a digit are not headings.
-int headingDigit(QStringView text) {
-    if (text.size() != 1 || text.front() < u'1' || text.front() > u'9')
-        return 0;
-    return text.front().unicode() - u'0';
 }
 
 // Longest basedOn chain that is followed (T-02-06). A deeper chain is cut at this many styles.
@@ -311,6 +378,136 @@ int headingLevel(const ParagraphProps &props, const StyleTable &styles) {
     return 0;
 }
 
+// One w:lvl of an abstract numbering definition: what the marker of its paragraphs looks like.
+struct NumLevel {
+    bool bullet = false;       // numFmt is "bullet"
+    bool approximated = false; // the number format is not reproduced exactly (OQ5)
+    qint64 start = 1;          // first number of the level, clamped (T-02-07)
+    QString pStyle;            // w:pStyle: the paragraph style linked to this level, empty when absent
+};
+
+// An abstract numbering definition with nine levels. A level that the part does not describe keeps
+// the defaults of NumLevel: decimal, start 1, not approximated.
+struct AbstractNum {
+    std::array<NumLevel, kListLevels> levels{};
+};
+
+// word/numbering.xml: w:num maps a numId to an abstractNumId, w:abstractNum holds the levels.
+struct NumberingTable {
+    QHash<qint64, qint64> numToAbstract;
+    QHash<qint64, AbstractNum> abstracts;
+};
+
+// Start value of a numbered level: a negative or non-numeric value becomes 1, and a value above
+// kMaxListStart becomes kMaxListStart (T-02-07).
+qint64 readStart(const QString &text) {
+    bool ok = false;
+    const qint64 value = text.toLongLong(&ok);
+    if (!ok || value < 0)
+        return 1;
+    return value > kMaxListStart ? kMaxListStart : value;
+}
+
+// Reads one w:lvl of an abstractNum right after its StartElement. A level whose w:ilvl is not 0 to
+// 8 is consumed and dropped. w:lvlText is read only to decide whether the format is approximated
+// (A5): it is never kept, and a bullet level never uses it.
+std::expected<void, DocxError> readLevel(PartReader &reader, AbstractNum &abstract) {
+    bool validIlvl = false;
+    const qint64 ilvl = wmlAttribute(reader.xml(), kIlvl).toLongLong(&validIlvl);
+    if (!validIlvl || ilvl < 0 || ilvl >= kListLevels)
+        return skipElement(reader);
+
+    NumLevel level;
+    std::optional<QString> numFmt;
+    std::optional<QString> lvlText;
+    auto children = forEachChild(reader, [&](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kStart)) {
+            level.start = readStart(wmlAttribute(child.xml(), kValue));
+        } else if (isWml(child.xml(), kNumFmt)) {
+            numFmt = wmlAttribute(child.xml(), kValue);
+        } else if (isWml(child.xml(), kLvlText)) {
+            lvlText = wmlAttribute(child.xml(), kValue);
+        } else if (isWml(child.xml(), kParagraphStyle)) {
+            level.pStyle = wmlAttribute(child.xml(), kValue);
+        }
+        return skipElement(child);
+    });
+    if (!children)
+        return children;
+
+    // A missing w:numFmt is decimal. The format is reproduced for bullet and for decimal with the
+    // "%1." text. Any other format is approximated, and so is decimal with another text (OQ5).
+    const QStringView format = numFmt ? QStringView(*numFmt) : kDecimal;
+    level.bullet = format == kBullet;
+    const bool decimal = format == kDecimal;
+    level.approximated = !level.bullet && (!decimal || (lvlText && QStringView(*lvlText) != kDecimalLvlText));
+    abstract.levels[static_cast<std::size_t>(ilvl)] = level;
+    return {};
+}
+
+// Reads one w:abstractNum right after its StartElement. Its w:lvl children fill its levels. An
+// abstractNumId that is not a number makes the definition unusable, so it is dropped.
+std::expected<void, DocxError> readAbstractNum(PartReader &reader, NumberingTable &numbering) {
+    bool validId = false;
+    const qint64 id = wmlAttribute(reader.xml(), kAbstractNumId).toLongLong(&validId);
+    AbstractNum abstract;
+    auto children = forEachChild(reader, [&abstract](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kLevel))
+            return readLevel(child, abstract);
+        return skipElement(child);
+    });
+    if (!children)
+        return children;
+    if (validId && !numbering.abstracts.contains(id))
+        numbering.abstracts.insert(id, abstract);
+    return {};
+}
+
+// Reads one w:num right after its StartElement: its numId and the abstractNumId it refers to.
+// w:lvlOverride and w:startOverride are not read in this plan.
+std::expected<void, DocxError> readNum(PartReader &reader, NumberingTable &numbering) {
+    bool validId = false;
+    const qint64 numId = wmlAttribute(reader.xml(), kNumId).toLongLong(&validId);
+    std::optional<qint64> abstractId;
+    auto children = forEachChild(reader, [&abstractId](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kAbstractNumId)) {
+            bool ok = false;
+            const qint64 value = wmlAttribute(child.xml(), kValue).toLongLong(&ok);
+            if (ok)
+                abstractId = value;
+        }
+        return skipElement(child);
+    });
+    if (!children)
+        return children;
+    if (validId && abstractId && !numbering.numToAbstract.contains(numId))
+        numbering.numToAbstract.insert(numId, *abstractId);
+    return {};
+}
+
+// Reads word/numbering.xml into the numbering table. Every token is checked, as for styles.
+// An empty part has no numbering.
+std::expected<NumberingTable, DocxError> readNumbering(const QByteArray &bytes) {
+    NumberingTable numbering;
+    if (bytes.isEmpty())
+        return numbering;
+    PartReader reader(bytes);
+    if (auto root = enterRoot(reader); !root)
+        return std::unexpected(root.error());
+    auto children = forEachChild(reader, [&numbering](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kAbstractNum))
+            return readAbstractNum(child, numbering);
+        if (isWml(child.xml(), kNum))
+            return readNum(child, numbering);
+        return skipElement(child);
+    });
+    if (!children)
+        return std::unexpected(children.error());
+    if (auto end = readToEnd(reader); !end)
+        return std::unexpected(end.error());
+    return numbering;
+}
+
 // Running totals for one readDocxContent call. They are not per paragraph: text and nodes of
 // tables count toward the same totals in plan 02-03.
 struct ParseBudget {
@@ -368,19 +565,96 @@ std::expected<Paragraph, DocxError> readParagraph(PartReader &reader, ParseBudge
     }
 }
 
-// Protective pass over a part whose content is not read in this plan (numbering; 02-02, Task 3).
-// It reads to the end, so a DOCTYPE, a bad encoding or a damaged part is refused with no partial
-// result (D-07). An empty part has nothing to check.
-std::expected<void, DocxError> checkPartIsSafe(const QByteArray &bytes) {
-    if (bytes.isEmpty())
-        return {};
-    PartReader reader(bytes);
-    while (true) {
-        auto token = reader.next();
-        if (!token)
-            return std::unexpected(token.error());
-        if (*token == QXmlStreamReader::EndDocument)
-            return {};
+// The numbering reference of a paragraph: the numId and level from its own numPr, or else from the
+// numPr of its style chain (A13). fromStyle tells which of the two it is.
+struct NumRef {
+    qint64 numId;
+    int ilvl;
+    bool fromStyle;
+};
+
+// Own numPr with a numId first, then the first style in the chain that has a numId. nullopt when
+// neither gives one.
+std::optional<NumRef> listReference(const ParagraphProps &props, const StyleTable &styles) {
+    if (props.numPr && props.numPr->numId)
+        return NumRef{*props.numPr->numId, props.numPr->ilvl, false};
+    for (const StyleInfo *style : styleChain(styles, props.styleId)) {
+        if (style->numId)
+            return NumRef{*style->numId, 0, true};
+    }
+    return std::nullopt;
+}
+
+// Level of a paragraph that takes its list from its style: the lowest level whose w:pStyle is the
+// paragraph's style, or 0 when no level names it (A13, ISO/IEC 29500-1).
+int levelForStyle(const AbstractNum &abstract, const QString &styleId) {
+    if (styleId.isEmpty())
+        return 0;
+    for (int ilvl = 0; ilvl < kListLevels; ++ilvl) {
+        if (abstract.levels[static_cast<std::size_t>(ilvl)].pStyle == styleId)
+            return ilvl;
+    }
+    return 0;
+}
+
+// Counters of one numId: per level, the last number and whether the level has started since its
+// last restart. Restart: a higher level (smaller ilvl) has an item, see advanceCounter.
+struct ListCounter {
+    std::array<qint64, kListLevels> value{};
+    std::array<bool, kListLevels> started{};
+};
+
+// State of the lists of one readDocxContent call.
+struct ListState {
+    QHash<qint64, ListCounter> counters; // by numId
+    QSet<qint64> warned;                 // numIds that already have their ListFormatApproximated
+};
+
+// One item at level ilvl: the first item after a restart takes the level's start value, later items
+// add one. Every deeper level restarts (the next item there starts from its start value again).
+void advanceCounter(ListCounter &counter, int ilvl, qint64 start) {
+    if (counter.started[static_cast<std::size_t>(ilvl)]) {
+        ++counter.value[static_cast<std::size_t>(ilvl)];
+    } else {
+        counter.value[static_cast<std::size_t>(ilvl)] = start;
+        counter.started[static_cast<std::size_t>(ilvl)] = true;
+    }
+    for (int deeper = ilvl + 1; deeper < kListLevels; ++deeper)
+        counter.started[static_cast<std::size_t>(deeper)] = false;
+}
+
+// Sets the list fields of a paragraph (DOCX-04): the kind, the level and the marker. A bullet level
+// gets U+2022; any other format gets the decimal number of its counter and a dot (OQ5). The
+// approximation warning is added once per numId, in the order the lists are met.
+// The text of w:lvlText is never a marker (A5).
+void applyList(Paragraph &paragraph, const ParagraphProps &props, const StyleTable &styles,
+               const NumberingTable &numbering, ListState &state, QList<DocxWarning> &warnings) {
+    const auto reference = listReference(props, styles);
+    if (!reference || reference->numId == 0) // numId 0 means "no numbering" (A4)
+        return;
+    const auto abstractId = numbering.numToAbstract.constFind(reference->numId);
+    if (abstractId == numbering.numToAbstract.constEnd())
+        return;
+    const auto found = numbering.abstracts.constFind(abstractId.value());
+    if (found == numbering.abstracts.constEnd())
+        return;
+    const AbstractNum &abstract = found.value();
+
+    const int ilvl = reference->fromStyle ? levelForStyle(abstract, props.styleId) : reference->ilvl;
+    const NumLevel &level = abstract.levels[static_cast<std::size_t>(ilvl)];
+    paragraph.listLevel = ilvl;
+    paragraph.listKind = level.bullet ? ListKind::Bullet : ListKind::Ordered;
+
+    ListCounter &counter = state.counters[reference->numId];
+    advanceCounter(counter, ilvl, level.start);
+    if (level.bullet)
+        paragraph.listMarker = QString(QChar(kBulletCharacter));
+    else
+        paragraph.listMarker = QString::number(counter.value[static_cast<std::size_t>(ilvl)]) + u'.';
+
+    if (level.approximated && !state.warned.contains(reference->numId)) {
+        state.warned.insert(reference->numId);
+        warnings.append(DocxWarning::ListFormatApproximated);
     }
 }
 
@@ -390,12 +664,13 @@ std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
     if (parts.documentXml.isEmpty())
         return std::unexpected(DocxError::Corrupt);
 
-    // Styles are read before the body (Task 1 of 02-02); numbering passes only the safety check
-    // until its content is read (Task 3 of 02-02).
+    // Styles and numbering are read before the body (02-RESEARCH.md, Patterns 3 and 4). Each part is
+    // checked token by token, so a DOCTYPE, a bad encoding or a damaged part is refused here (D-07).
     auto styles = readStyles(parts.stylesXml);
     if (!styles)
         return std::unexpected(styles.error());
-    if (auto numbering = checkPartIsSafe(parts.numberingXml); !numbering)
+    auto numbering = readNumbering(parts.numberingXml);
+    if (!numbering)
         return std::unexpected(numbering.error());
 
     PartReader reader(parts.documentXml);
@@ -414,6 +689,7 @@ std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
     DocxDocument document;
     document.warnings = parts.warnings;
     ParseBudget budget;
+    ListState lists;
 
     // Direct children of w:body. Each child is consumed whole, so an EndElement seen here
     // at this level is the end of w:body.
@@ -432,6 +708,7 @@ std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
                 if (!paragraph)
                     return std::unexpected(paragraph.error());
                 paragraph->headingLevel = headingLevel(props, *styles);
+                applyList(*paragraph, props, *styles, *numbering, lists, document.warnings);
                 document.blocks.append(Block{std::move(*paragraph)});
             } else {
                 // Other body children (tables, drawings, fields) are not read in this plan (02-03).
