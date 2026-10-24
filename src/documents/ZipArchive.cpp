@@ -1,4 +1,5 @@
 #include "documents/ZipArchive.h"
+#include <algorithm>
 #include <array>
 #include <string>
 #include <utility>
@@ -86,6 +87,16 @@ std::expected<QByteArray, DocxError> ZipArchive::readEntry(std::string_view exac
     if (index < 0)
         return std::unexpected(DocxError::MissingPart);
 
+    // Declared compressed size from the central directory, used only by the ratio check below.
+    // When libzip does not report it as known, 1 stands in, which makes the ratio check stricter
+    // (fails closed). A failed stat is damage, not a lookup miss.
+    zip_stat_t stat;
+    zip_stat_init(&stat);
+    if (zip_stat_index(impl_->archive, static_cast<zip_uint64_t>(index), 0, &stat) != 0)
+        return std::unexpected(DocxError::Corrupt);
+    const zip_uint64_t declaredCompressed = (stat.valid & ZIP_STAT_COMP_SIZE) ? stat.comp_size : 1;
+    const zip_uint64_t ratioBase = std::max<zip_uint64_t>(declaredCompressed, 1);
+
     zip_file_t *file = zip_fopen_index(impl_->archive, static_cast<zip_uint64_t>(index), 0);
     if (!file) {
         // Only the status code is read; libzip message text never leaves this file (T-01-04).
@@ -115,6 +126,15 @@ std::expected<QByteArray, DocxError> ZipArchive::readEntry(std::string_view exac
         }
         out.append(chunk.data(), static_cast<qsizetype>(got));
         total += got;
+
+        // Compression-ratio check (T-01-12). Once more than kCompressionCheckAfterBytes have been
+        // produced, the produced size may not exceed kMaxCompressionRatio times the declared
+        // compressed size. The declared value only feeds this comparison; it never widens maxBytes.
+        if (total > kCompressionCheckAfterBytes &&
+            static_cast<zip_uint64_t>(total) / static_cast<zip_uint64_t>(kMaxCompressionRatio) > ratioBase) {
+            zip_fclose(file);
+            return std::unexpected(DocxError::Limit);
+        }
     }
 
     // A nonzero close result (for example a CRC mismatch) discards the whole entry (D-07).

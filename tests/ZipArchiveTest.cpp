@@ -45,6 +45,37 @@ class ZipArchiveTest : public QObject {
         QCOMPARE(exact.value(), body);
     }
 
+    void deflatedBombIsLimitedByRatio() {
+        // Two mebibytes of zeros deflate to a few kilobytes: the ratio is far above 100 to 1.
+        const QByteArray zeros(2 * 1024 * 1024, '\0');
+        const auto written = writeLibzipArchive({ZipEntry{"word/document.xml", zeros}}, QByteArray());
+        if (!written)
+            QFAIL(qPrintable(
+                QStringLiteral("libzip could not write the bomb fixture: %1").arg(written.error())));
+        // Without compression the ratio check could not be exercised at all, so the fixture must be small.
+        QVERIFY2(written->size() < 64 * 1024, "the bomb fixture must be deflated");
+
+        auto opened = documents::ZipArchive::open(*written);
+        QVERIFY2(opened.has_value(), "the bomb archive itself must open");
+        const auto &archive = *opened.value();
+
+        auto entry = archive.readEntry("word/document.xml", documents::kMaxUnpackedBytes);
+        QVERIFY(!entry.has_value());
+        QCOMPARE(static_cast<int>(entry.error()), static_cast<int>(documents::DocxError::Limit));
+    }
+
+    void storedLargeEntryIsNotRatioLimited() {
+        // The same two mebibytes stored without compression: the ratio is one, so the check must not fire.
+        const QByteArray zeros(2 * 1024 * 1024, '\0');
+        auto opened = documents::ZipArchive::open(buildStoredZip({ZipEntry{"word/document.xml", zeros}}));
+        QVERIFY2(opened.has_value(), "the stored archive must open");
+        const auto &archive = *opened.value();
+
+        auto entry = archive.readEntry("word/document.xml", documents::kMaxUnpackedBytes);
+        QVERIFY2(entry.has_value(), "a stored entry of the same size must be read");
+        QCOMPARE(entry.value(), zeros);
+    }
+
     void exactNameMissingIsMissingPart() {
         const QByteArray xml = QByteArrayLiteral("<w:document/>");
         auto opened = documents::ZipArchive::open(buildDocxLike(xml));

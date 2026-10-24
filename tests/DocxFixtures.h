@@ -172,6 +172,12 @@ inline std::expected<QByteArray, QString> writeLibzipArchive(const QList<ZipEntr
             zip_discard(archive);
             return std::unexpected(QStringLiteral("zip_file_add failed: %1").arg(text));
         }
+        // Deflate is set explicitly so a bomb fixture is compressed on every build, not by libzip's default.
+        if (zip_set_file_compression(archive, static_cast<zip_uint64_t>(index), ZIP_CM_DEFLATE, 0) != 0) {
+            const QString text = QString::fromUtf8(zip_strerror(archive));
+            zip_discard(archive);
+            return std::unexpected(QStringLiteral("zip_set_file_compression failed: %1").arg(text));
+        }
         if (entry.name == encryptedName) {
             const int rc = zip_file_set_encryption(archive, static_cast<zip_uint64_t>(index), ZIP_EM_AES_256,
                                                    "fixture-password");
