@@ -159,6 +159,40 @@ class ZipArchiveTest : public QObject {
         QVERIFY(!parts.has_value());
         QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Encrypted));
     }
+
+    void zeroByteInputIsNotZip() {
+        auto parts = documents::readDocxParts(QByteArray());
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::NotZip));
+    }
+
+    void inputAboveFileLimitIsTooLarge() {
+        // One byte over the D-01 limit; the container refuses it before any classification.
+        const QByteArray tooBig(static_cast<qsizetype>(documents::kMaxFileBytes + 1), '\0');
+        auto parts = documents::readDocxParts(tooBig);
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::TooLarge));
+    }
+
+    void damagedDocumentPartRefusesPartialResult() {
+        // The marker lives only in the stored data of word/document.xml (not in the names),
+        // so searching for it locates that data without a hard-coded offset.
+        const QByteArray marker = QByteArrayLiteral("RESUME-MARKER-0123456789");
+        QByteArray body = QByteArrayLiteral("<w:document><w:t>");
+        body.append(marker);
+        body.append(QByteArrayLiteral("</w:t></w:document>"));
+        QByteArray zip = buildDocxLike(body);
+
+        const qsizetype at = zip.indexOf(marker);
+        QVERIFY2(at >= 0, "the marker must be present in the stored archive");
+        // Flip one bit in the middle of the stored data: the entry's CRC-32 no longer matches.
+        const qsizetype flip = at + marker.size() / 2;
+        zip[flip] = static_cast<char>(zip[flip] ^ 0x01);
+
+        auto parts = documents::readDocxParts(zip);
+        QVERIFY2(!parts.has_value(), "a damaged document part must not return any part (D-07)");
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Corrupt));
+    }
 };
 
 QTEST_GUILESS_MAIN(ZipArchiveTest)

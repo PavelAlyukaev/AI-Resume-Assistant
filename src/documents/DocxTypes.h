@@ -28,12 +28,12 @@ enum class DocxWarning {
 
 // D-01: largest input accepted, in bytes. Enforced at the container and, before any open,
 // at the file level in plan 01-03.
-inline constexpr qint64 kMaxFileBytes = 10 * 1024 * 1024;
+inline constexpr qint64 kMaxFileBytes = qint64{10} * 1024 * 1024;
 
 // D-02, reinterpreted: one budget shared by word/document.xml, word/styles.xml and
 // word/numbering.xml within one open. D-02 as written names only word/document.xml; the
 // shared-budget scope awaits owner confirmation (recorded in plan 01-04).
-inline constexpr qint64 kMaxUnpackedBytes = 20 * 1024 * 1024;
+inline constexpr qint64 kMaxUnpackedBytes = qint64{20} * 1024 * 1024;
 
 // Planner choice, enforced in plan 01-04. Value to confirm with the owner.
 inline constexpr qint64 kMaxEntries = 1000;
@@ -42,7 +42,7 @@ inline constexpr qint64 kMaxEntries = 1000;
 inline constexpr qint64 kMaxCompressionRatio = 100;
 
 // Planner choice, enforced in plan 01-04. Value to confirm with the owner.
-inline constexpr qint64 kCompressionCheckAfterBytes = 1024 * 1024;
+inline constexpr qint64 kCompressionCheckAfterBytes = qint64{1024} * 1024;
 
 // D-03, enforced in Phase 2.
 inline constexpr qint64 kMaxTextChars = 200000;
