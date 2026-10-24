@@ -17,6 +17,10 @@ constexpr std::string_view kNumberingEntry = "word/numbering.xml";
 constexpr std::array<char, 4> kZipLocalHeader{'P', 'K', '\x03', '\x04'};
 constexpr std::array<char, 4> kZipEmptyArchive{'P', 'K', '\x05', '\x06'};
 
+// OLE2 (Compound File Binary) signature: old .doc files and encrypted DOCX wrappers.
+constexpr std::array<char, 8> kCfbSignature{'\xD0', '\xCF', '\x11', '\xE0', '\xA1', '\xB1', '\x1A', '\xE1'};
+constexpr std::string_view kEncryptedPackageName = "EncryptedPackage";
+
 // Compares the leading bytes with an explicit length, so a short or empty input stays in
 // bounds and a NUL inside the signature is compared as data, not as a terminator.
 template <std::size_t N>
@@ -25,14 +29,34 @@ bool startsWithSignature(const QByteArray &bytes, const std::array<char, N> &sig
            std::equal(signature.begin(), signature.end(), bytes.begin());
 }
 
+// UTF-16LE form of an ASCII name, built byte by byte (ASCII byte, then zero byte), so the
+// encoding does not depend on the host byte order or on a Qt conversion.
+QByteArray utf16LeFromAscii(std::string_view ascii) {
+    QByteArray out;
+    out.reserve(static_cast<qsizetype>(ascii.size() * 2));
+    for (const char ch : ascii) {
+        out.append(ch);
+        out.append('\0');
+    }
+    return out;
+}
+
 } // namespace
 
 std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes) {
     if (bytes.size() > kMaxFileBytes)
         return std::unexpected(DocxError::TooLarge);
 
-    // Classification happens before any libzip call (T-01-05). Only the ZIP signatures
-    // reach ZipArchive; anything else is not a ZIP container.
+    // Classification happens before any libzip call (T-01-05, D-06). A CFB container is
+    // Encrypted when its bytes name the EncryptedPackage stream, otherwise LegacyDoc. The
+    // scan is a bounds-checked search over the whole input; no offset is taken from the file.
+    if (startsWithSignature(bytes, kCfbSignature)) {
+        return bytes.contains(utf16LeFromAscii(kEncryptedPackageName))
+                   ? std::unexpected(DocxError::Encrypted)
+                   : std::unexpected(DocxError::LegacyDoc);
+    }
+
+    // Only the ZIP signatures reach ZipArchive; anything else is not a ZIP container.
     if (!startsWithSignature(bytes, kZipLocalHeader) && !startsWithSignature(bytes, kZipEmptyArchive))
         return std::unexpected(DocxError::NotZip);
 
