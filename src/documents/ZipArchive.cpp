@@ -86,10 +86,15 @@ std::expected<QByteArray, DocxError> ZipArchive::readEntry(std::string_view exac
     if (index < 0)
         return std::unexpected(DocxError::MissingPart);
 
-    // Refined to Encrypted in plan 01-02; until then every failed open is Corrupt.
     zip_file_t *file = zip_fopen_index(impl_->archive, static_cast<zip_uint64_t>(index), 0);
-    if (!file)
+    if (!file) {
+        // Only the status code is read; libzip message text never leaves this file (T-01-04).
+        // A missing or wrong password is an encrypted entry, anything else is damaged.
+        const int code = zip_error_code_zip(zip_get_error(impl_->archive));
+        if (code == ZIP_ER_NOPASSWD || code == ZIP_ER_WRONGPASSWD)
+            return std::unexpected(DocxError::Encrypted);
         return std::unexpected(DocxError::Corrupt);
+    }
 
     // The declared size from the central directory is never used for allocation (Pitfall 3).
     // Bytes are counted as they are actually produced by zip_fread.

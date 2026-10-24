@@ -1,109 +1,10 @@
 #include "documents/ZipArchive.h"
+#include "DocxFixtures.h"
+#include "documents/DocxContainer.h"
 #include <QtTest>
 #include <string>
 
-namespace {
-
-struct ZipEntry {
-    QByteArray name;
-    QByteArray data;
-};
-
-struct CentralRecord {
-    quint32 crc;
-    quint32 size;
-    quint32 offset;
-    QByteArray name;
-};
-
-// Synthetic fixtures are generated in memory; no binary files are committed (Pitfall 10).
-quint32 crc32Ieee(const QByteArray &data) {
-    quint32 crc = 0xFFFFFFFFu;
-    for (const char ch : data) {
-        crc ^= static_cast<quint8>(ch);
-        for (int bit = 0; bit < 8; ++bit)
-            crc = (crc & 1u) ? (crc >> 1) ^ 0xEDB88320u : (crc >> 1);
-    }
-    return ~crc;
-}
-
-void appendLe16(QByteArray &out, quint16 value) {
-    out.append(static_cast<char>(value & 0xFFu));
-    out.append(static_cast<char>((value >> 8) & 0xFFu));
-}
-
-void appendLe32(QByteArray &out, quint32 value) {
-    appendLe16(out, static_cast<quint16>(value & 0xFFFFu));
-    appendLe16(out, static_cast<quint16>(value >> 16));
-}
-
-// Stored (method 0) ZIP: local headers, central directory, end record. Little-endian fields.
-QByteArray buildStoredZip(const QList<ZipEntry> &entries) {
-    QByteArray out;
-    QList<CentralRecord> central;
-    for (const ZipEntry &entry : entries) {
-        const quint32 crc = crc32Ieee(entry.data);
-        const quint32 size = static_cast<quint32>(entry.data.size());
-        const quint32 offset = static_cast<quint32>(out.size());
-        appendLe32(out, 0x04034b50u); // local file header signature
-        appendLe16(out, 20);          // version needed
-        appendLe16(out, 0);           // flags
-        appendLe16(out, 0);           // method: stored
-        appendLe16(out, 0);           // mod time
-        appendLe16(out, 0x21);        // mod date (1980-01-01)
-        appendLe32(out, crc);
-        appendLe32(out, size); // compressed size
-        appendLe32(out, size); // uncompressed size
-        appendLe16(out, static_cast<quint16>(entry.name.size()));
-        appendLe16(out, 0); // extra length
-        out.append(entry.name);
-        out.append(entry.data);
-        central.append({crc, size, offset, entry.name});
-    }
-
-    const quint32 centralOffset = static_cast<quint32>(out.size());
-    for (const CentralRecord &record : central) {
-        appendLe32(out, 0x02014b50u); // central directory header signature
-        appendLe16(out, 20);          // version made by
-        appendLe16(out, 20);          // version needed
-        appendLe16(out, 0);           // flags
-        appendLe16(out, 0);           // method: stored
-        appendLe16(out, 0);           // mod time
-        appendLe16(out, 0x21);        // mod date
-        appendLe32(out, record.crc);
-        appendLe32(out, record.size);
-        appendLe32(out, record.size);
-        appendLe16(out, static_cast<quint16>(record.name.size()));
-        appendLe16(out, 0); // extra length
-        appendLe16(out, 0); // comment length
-        appendLe16(out, 0); // disk number start
-        appendLe16(out, 0); // internal attributes
-        appendLe32(out, 0); // external attributes
-        appendLe32(out, record.offset);
-        out.append(record.name);
-    }
-    const quint32 centralSize = static_cast<quint32>(out.size()) - centralOffset;
-
-    appendLe32(out, 0x06054b50u); // end of central directory signature
-    appendLe16(out, 0);           // disk number
-    appendLe16(out, 0);           // disk with central directory
-    appendLe16(out, static_cast<quint16>(central.size()));
-    appendLe16(out, static_cast<quint16>(central.size()));
-    appendLe32(out, centralSize);
-    appendLe32(out, centralOffset);
-    appendLe16(out, 0); // comment length
-    return out;
-}
-
-// A DOCX-shaped archive: [Content_Types].xml plus word/document.xml with the given body.
-QByteArray buildDocxLike(const QByteArray &documentXml) {
-    return buildStoredZip({
-        ZipEntry{"[Content_Types].xml", "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Types/>"},
-        ZipEntry{"word/document.xml", documentXml},
-    });
-}
-
-} // namespace
+using namespace fixtures;
 
 class ZipArchiveTest : public QObject {
     Q_OBJECT
@@ -176,6 +77,121 @@ class ZipArchiveTest : public QObject {
             documents::ZipArchive::open(QByteArrayLiteral("This is plain text, not a ZIP archive."));
         QVERIFY(!fromText.has_value());
         QCOMPARE(static_cast<int>(fromText.error()), static_cast<int>(documents::DocxError::Corrupt));
+    }
+
+    void docxPartsReadDocumentStylesAndNumbering() {
+        const QByteArray doc = QStringLiteral("<w:document>Резюме</w:document>").toUtf8();
+        const QByteArray styles = QStringLiteral("<w:styles>Стили</w:styles>").toUtf8();
+        const QByteArray numbering = QStringLiteral("<w:numbering>Нумерация</w:numbering>").toUtf8();
+        const QByteArray zip = buildStoredZip({
+            ZipEntry{"word/document.xml", doc},
+            ZipEntry{"word/styles.xml", styles},
+            ZipEntry{"word/numbering.xml", numbering},
+        });
+
+        auto parts = documents::readDocxParts(zip);
+        QVERIFY2(parts.has_value(), "a ZIP with the three parts must read");
+        QCOMPARE(parts->documentXml, doc);
+        QCOMPARE(parts->stylesXml, styles);
+        QCOMPARE(parts->numberingXml, numbering);
+        QVERIFY(parts->warnings.isEmpty());
+    }
+
+    void plainTextIsNotZip() {
+        auto parts = documents::readDocxParts(QStringLiteral("Резюме: инженер, опыт 5 лет").toUtf8());
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::NotZip));
+    }
+
+    void missingStylesAndNumberingGiveWarnings() {
+        const QByteArray doc = QByteArrayLiteral("<w:document>only body</w:document>");
+        auto parts = documents::readDocxParts(buildStoredZip({ZipEntry{"word/document.xml", doc}}));
+        QVERIFY2(parts.has_value(), "a ZIP with only the document part must read");
+        QCOMPARE(parts->documentXml, doc);
+        QVERIFY(parts->stylesXml.isEmpty());
+        QVERIFY(parts->numberingXml.isEmpty());
+
+        // One warning per missing optional part: the list size is the count (D-08, D-09).
+        QCOMPARE(static_cast<int>(parts->warnings.size()), 2);
+        QCOMPARE(static_cast<int>(parts->warnings.at(0)),
+                 static_cast<int>(documents::DocxWarning::StylesPartMissing));
+        QCOMPARE(static_cast<int>(parts->warnings.at(1)),
+                 static_cast<int>(documents::DocxWarning::NumberingPartMissing));
+    }
+
+    void cfbWithEncryptedPackageIsEncrypted() {
+        auto parts = documents::readDocxParts(buildCfb(true));
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Encrypted));
+    }
+
+    void cfbWithoutEncryptedPackageIsLegacyDoc() {
+        auto parts = documents::readDocxParts(buildCfb(false));
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::LegacyDoc));
+    }
+
+    void pkHeaderOnlyIsCorrupt() {
+        // A ZIP local header followed by bytes that are not a central directory: libzip rejects it.
+        const QByteArray bytes = QByteArray("PK\x03\x04", 4) + QByteArrayLiteral("garbage, no directory");
+        auto parts = documents::readDocxParts(bytes);
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Corrupt));
+    }
+
+    void zipWithoutDocumentIsMissingPart() {
+        auto parts = documents::readDocxParts(
+            buildStoredZip({ZipEntry{"word/styles.xml", QByteArrayLiteral("<w:styles/>")}}));
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::MissingPart));
+    }
+
+    void libzipEncryptedEntryIsEncrypted() {
+        const auto written = writeLibzipArchive(
+            {ZipEntry{"word/document.xml", QByteArrayLiteral("<w:document>secret text</w:document>")}},
+            QByteArrayLiteral("word/document.xml"));
+        if (!written)
+            QFAIL(qPrintable(
+                QStringLiteral("libzip could not write the encrypted fixture: %1").arg(written.error())));
+
+        // The central directory is readable; the document entry needs a password it does not have.
+        auto parts = documents::readDocxParts(*written);
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Encrypted));
+    }
+
+    void zeroByteInputIsNotZip() {
+        auto parts = documents::readDocxParts(QByteArray());
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::NotZip));
+    }
+
+    void inputAboveFileLimitIsTooLarge() {
+        // One byte over the D-01 limit; the container refuses it before any classification.
+        const QByteArray tooBig(static_cast<qsizetype>(documents::kMaxFileBytes + 1), '\0');
+        auto parts = documents::readDocxParts(tooBig);
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::TooLarge));
+    }
+
+    void damagedDocumentPartRefusesPartialResult() {
+        // The marker lives only in the stored data of word/document.xml (not in the names),
+        // so searching for it locates that data without a hard-coded offset.
+        const QByteArray marker = QByteArrayLiteral("RESUME-MARKER-0123456789");
+        QByteArray body = QByteArrayLiteral("<w:document><w:t>");
+        body.append(marker);
+        body.append(QByteArrayLiteral("</w:t></w:document>"));
+        QByteArray zip = buildDocxLike(body);
+
+        const qsizetype at = zip.indexOf(marker);
+        QVERIFY2(at >= 0, "the marker must be present in the stored archive");
+        // Flip one bit in the middle of the stored data: the entry's CRC-32 no longer matches.
+        const qsizetype flip = at + marker.size() / 2;
+        zip[flip] = static_cast<char>(zip[flip] ^ 0x01);
+
+        auto parts = documents::readDocxParts(zip);
+        QVERIFY2(!parts.has_value(), "a damaged document part must not return any part (D-07)");
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Corrupt));
     }
 };
 
