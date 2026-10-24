@@ -320,6 +320,34 @@ class DocumentImportTest : public QObject {
         }
     }
 
+    void bombFromCyrillicDirectoryIsLimitWithFileNameOnly() {
+        // A deflated two-mebibyte bomb: small on disk, refused by the ratio check during the read.
+        const QByteArray zeros(qsizetype{2} * 1024 * 1024, '\0');
+        const auto written = writeLibzipArchive({ZipEntry{"word/document.xml", zeros}}, QByteArray());
+        if (!written)
+            QFAIL(qPrintable(
+                QStringLiteral("libzip could not write the bomb fixture: %1").arg(written.error())));
+        QVERIFY2(written->size() < qsizetype{64} * 1024, "the bomb fixture must be deflated");
+
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+        const QString name = QStringLiteral("Бомба.docx");
+        const QString path = QDir(dir).filePath(name);
+        QVERIFY(writeBytes(path, *written));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(!result.has_value(), "a zip bomb must not import");
+        QCOMPARE(result.error(),
+                 QStringLiteral("Файл «%1» отклонён: после распаковки содержимое слишком большое или состоит "
+                                "из слишком многих частей. Сохраните резюме заново в Word и повторите.")
+                     .arg(name));
+        QVERIFY(!result.error().contains(root.path()));
+        QVERIFY(!result.error().contains(dir));
+        QVERIFY(!result.error().contains(cyrillicSubdirName()));
+    }
+
     void messagesLeakNeitherPathNorContent() {
         QTemporaryDir root;
         QVERIFY(root.isValid());

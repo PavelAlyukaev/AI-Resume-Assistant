@@ -6,6 +6,7 @@
 #include <QList>
 #include <QString>
 #include <QTemporaryDir>
+#include <algorithm>
 #include <expected>
 #include <string_view>
 #include <zip.h>
@@ -17,11 +18,14 @@ namespace fixtures {
 struct ZipEntry {
     QByteArray name;
     QByteArray data;
+    // Forged-header option: both declared size fields (local and central) are written this many
+    // bytes smaller than the real data. The data bytes and the CRC are not changed. Default zero.
+    quint32 declaredSizeDelta = 0;
 };
 
 struct CentralRecord {
     quint32 crc;
-    quint32 size;
+    quint32 declaredSize;
     quint32 offset;
     QByteArray name;
 };
@@ -53,6 +57,9 @@ inline QByteArray buildStoredZip(const QList<ZipEntry> &entries) {
     for (const ZipEntry &entry : entries) {
         const quint32 crc = crc32Ieee(entry.data);
         const quint32 size = static_cast<quint32>(entry.data.size());
+        // The declared size is the real size minus the requested delta (never below zero).
+        // It is written into both headers; the data bytes that follow stay the real ones.
+        const quint32 declared = size - std::min(size, entry.declaredSizeDelta);
         const quint32 offset = static_cast<quint32>(out.size());
         appendLe32(out, 0x04034b50u); // local file header signature
         appendLe16(out, 20);          // version needed
@@ -61,13 +68,13 @@ inline QByteArray buildStoredZip(const QList<ZipEntry> &entries) {
         appendLe16(out, 0);           // mod time
         appendLe16(out, 0x21);        // mod date (1980-01-01)
         appendLe32(out, crc);
-        appendLe32(out, size); // compressed size
-        appendLe32(out, size); // uncompressed size
+        appendLe32(out, declared); // compressed size
+        appendLe32(out, declared); // uncompressed size
         appendLe16(out, static_cast<quint16>(entry.name.size()));
         appendLe16(out, 0); // extra length
         out.append(entry.name);
         out.append(entry.data);
-        central.append({crc, size, offset, entry.name});
+        central.append({crc, declared, offset, entry.name});
     }
 
     const quint32 centralOffset = static_cast<quint32>(out.size());
@@ -80,8 +87,8 @@ inline QByteArray buildStoredZip(const QList<ZipEntry> &entries) {
         appendLe16(out, 0);           // mod time
         appendLe16(out, 0x21);        // mod date
         appendLe32(out, record.crc);
-        appendLe32(out, record.size);
-        appendLe32(out, record.size);
+        appendLe32(out, record.declaredSize);
+        appendLe32(out, record.declaredSize);
         appendLe16(out, static_cast<quint16>(record.name.size()));
         appendLe16(out, 0); // extra length
         appendLe16(out, 0); // comment length
@@ -102,6 +109,16 @@ inline QByteArray buildStoredZip(const QList<ZipEntry> &entries) {
     appendLe32(out, centralOffset);
     appendLe16(out, 0); // comment length
     return out;
+}
+
+// N small stored entries named e0 through e(N-1), each with a one-byte body. Used to meet or
+// exceed the entry limit; a caller appends a real part when it needs one.
+inline QList<ZipEntry> smallEntries(int count) {
+    QList<ZipEntry> entries;
+    entries.reserve(count);
+    for (int i = 0; i < count; ++i)
+        entries.append(ZipEntry{QByteArray("e") + QByteArray::number(i), QByteArrayLiteral("x")});
+    return entries;
 }
 
 // A DOCX-shaped archive: [Content_Types].xml plus word/document.xml with the given body.
@@ -171,6 +188,12 @@ inline std::expected<QByteArray, QString> writeLibzipArchive(const QList<ZipEntr
             const QString text = QString::fromUtf8(zip_strerror(archive));
             zip_discard(archive);
             return std::unexpected(QStringLiteral("zip_file_add failed: %1").arg(text));
+        }
+        // Deflate is set explicitly so a bomb fixture is compressed on every build, not by libzip's default.
+        if (zip_set_file_compression(archive, static_cast<zip_uint64_t>(index), ZIP_CM_DEFLATE, 0) != 0) {
+            const QString text = QString::fromUtf8(zip_strerror(archive));
+            zip_discard(archive);
+            return std::unexpected(QStringLiteral("zip_set_file_compression failed: %1").arg(text));
         }
         if (entry.name == encryptedName) {
             const int rc = zip_file_set_encryption(archive, static_cast<zip_uint64_t>(index), ZIP_EM_AES_256,

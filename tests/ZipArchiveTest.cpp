@@ -45,6 +45,131 @@ class ZipArchiveTest : public QObject {
         QCOMPARE(exact.value(), body);
     }
 
+    void deflatedBombIsLimitedByRatio() {
+        // Two mebibytes of zeros deflate to a few kilobytes: the ratio is far above 100 to 1.
+        const QByteArray zeros(qsizetype{2} * 1024 * 1024, '\0');
+        const auto written = writeLibzipArchive({ZipEntry{"word/document.xml", zeros}}, QByteArray());
+        if (!written)
+            QFAIL(qPrintable(
+                QStringLiteral("libzip could not write the bomb fixture: %1").arg(written.error())));
+        // Without compression the ratio check could not be exercised at all, so the fixture must be small.
+        QVERIFY2(written->size() < qsizetype{64} * 1024, "the bomb fixture must be deflated");
+
+        auto opened = documents::ZipArchive::open(*written);
+        QVERIFY2(opened.has_value(), "the bomb archive itself must open");
+        const auto &archive = *opened.value();
+
+        auto entry = archive.readEntry("word/document.xml", documents::kMaxUnpackedBytes);
+        QVERIFY(!entry.has_value());
+        QCOMPARE(static_cast<int>(entry.error()), static_cast<int>(documents::DocxError::Limit));
+    }
+
+    void storedLargeEntryIsNotRatioLimited() {
+        // The same two mebibytes stored without compression: the ratio is one, so the check must not fire.
+        const QByteArray zeros(qsizetype{2} * 1024 * 1024, '\0');
+        auto opened = documents::ZipArchive::open(buildStoredZip({ZipEntry{"word/document.xml", zeros}}));
+        QVERIFY2(opened.has_value(), "the stored archive must open");
+        const auto &archive = *opened.value();
+
+        auto entry = archive.readEntry("word/document.xml", documents::kMaxUnpackedBytes);
+        QVERIFY2(entry.has_value(), "a stored entry of the same size must be read");
+        QCOMPARE(entry.value(), zeros);
+    }
+
+    void tooManyEntriesIsLimit() {
+        // 1001 entries, one more than kMaxEntries, and no document part: refused at open.
+        auto opened = documents::ZipArchive::open(buildStoredZip(smallEntries(1001)));
+        QVERIFY(!opened.has_value());
+        QCOMPARE(static_cast<int>(opened.error()), static_cast<int>(documents::DocxError::Limit));
+
+        auto parts = documents::readDocxParts(buildStoredZip(smallEntries(1001)));
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Limit));
+    }
+
+    void exactlyMaxEntriesIsAccepted() {
+        // 999 small entries plus word/document.xml: exactly kMaxEntries entries, which is allowed.
+        const QByteArray doc = QByteArrayLiteral("<w:document>at the limit</w:document>");
+        QList<ZipEntry> entries = smallEntries(999);
+        entries.append(ZipEntry{"word/document.xml", doc});
+        QCOMPARE(static_cast<qint64>(entries.size()), documents::kMaxEntries);
+
+        auto parts = documents::readDocxParts(buildStoredZip(entries));
+        QVERIFY2(parts.has_value(), "an archive with exactly kMaxEntries entries must read");
+        QCOMPARE(parts->documentXml, doc);
+    }
+
+    void duplicateEntryNameIsCorrupt() {
+        // Two entries named word/document.xml: a duplicate could hide which part a reader selects.
+        const QByteArray zip = buildStoredZip({
+            ZipEntry{"word/document.xml", QByteArrayLiteral("<w:document>first</w:document>")},
+            ZipEntry{"word/document.xml", QByteArrayLiteral("<w:document>second</w:document>")},
+        });
+        auto parts = documents::readDocxParts(zip);
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::Corrupt));
+    }
+
+    void caseAndSuffixVariantsAreNotMatched() {
+        // Neither an upper-case directory nor a suffixed name is the document part.
+        const QByteArray zip = buildStoredZip({
+            ZipEntry{"WORD/document.xml", QByteArrayLiteral("<w:document>upper</w:document>")},
+            ZipEntry{"word/document.xml.bak", QByteArrayLiteral("<w:document>backup</w:document>")},
+        });
+        auto parts = documents::readDocxParts(zip);
+        QVERIFY(!parts.has_value());
+        QCOMPARE(static_cast<int>(parts.error()), static_cast<int>(documents::DocxError::MissingPart));
+    }
+
+    void budgetBoundaryIsExact() {
+        const QByteArray body(4096, 'b');
+        auto opened = documents::ZipArchive::open(buildStoredZip({ZipEntry{"word/document.xml", body}}));
+        QVERIFY2(opened.has_value(), "in-memory archive must open");
+        const auto &archive = *opened.value();
+
+        auto exact = archive.readEntry("word/document.xml", 4096);
+        QVERIFY2(exact.has_value(), "a budget equal to the entry size must succeed");
+        QCOMPARE(exact.value(), body);
+
+        auto oneShort = archive.readEntry("word/document.xml", 4095);
+        QVERIFY(!oneShort.has_value());
+        QCOMPARE(static_cast<int>(oneShort.error()), static_cast<int>(documents::DocxError::Limit));
+    }
+
+    void sharedBudgetAcrossParts() {
+        const QByteArray document(3000, 'd');
+        const QByteArray styles(2000, 's');
+        const QByteArray zip = buildStoredZip({
+            ZipEntry{"word/document.xml", document},
+            ZipEntry{"word/styles.xml", styles},
+        });
+
+        // 3000 + 2000 bytes in one open: the styles part finds only 1096 bytes left of 4096.
+        auto tight = documents::readDocxParts(zip, 4096);
+        QVERIFY(!tight.has_value());
+        QCOMPARE(static_cast<int>(tight.error()), static_cast<int>(documents::DocxError::Limit));
+
+        // A budget equal to the total produced bytes is enough.
+        auto exact = documents::readDocxParts(zip, 5000);
+        QVERIFY2(exact.has_value(), "a budget equal to the bytes of all parts must read");
+        QCOMPARE(exact->documentXml, document);
+        QCOMPARE(exact->stylesXml, styles);
+    }
+
+    void declaredSizeCannotHideOverflow() {
+        // 4000 real bytes stored, with both headers declaring 1000 bytes fewer. The archive opens;
+        // the read must not return bytes, and the failure is Corrupt (D-07, T-01-13).
+        const QByteArray body(4000, 'z');
+        auto opened =
+            documents::ZipArchive::open(buildStoredZip({ZipEntry{"word/document.xml", body, 1000}}));
+        QVERIFY2(opened.has_value(), "the archive with a forged declared size must open");
+        const auto &archive = *opened.value();
+
+        auto forged = archive.readEntry("word/document.xml", 3500);
+        QVERIFY2(!forged.has_value(), "a forged declared size must not yield bytes");
+        QCOMPARE(static_cast<int>(forged.error()), static_cast<int>(documents::DocxError::Corrupt));
+    }
+
     void exactNameMissingIsMissingPart() {
         const QByteArray xml = QByteArrayLiteral("<w:document/>");
         auto opened = documents::ZipArchive::open(buildDocxLike(xml));

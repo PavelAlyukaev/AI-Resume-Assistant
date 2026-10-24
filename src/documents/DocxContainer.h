@@ -19,6 +19,10 @@ struct DocxParts {
 // Classifies the input by its leading bytes, then reads the three parts from memory.
 // Takes bytes, never a path (Pitfall 2, D-05). Returns a code and no partial result on
 // any failure (D-07).
-std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes);
+// unpackedBudget is the one budget shared by the three parts in this open (D-02, as
+// reinterpreted). It defaults to kMaxUnpackedBytes; the parameter lets tests exercise the shared
+// budget with small numbers. A declared size never changes it.
+std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes,
+                                                  qint64 unpackedBudget = kMaxUnpackedBytes);
 
 } // namespace documents
