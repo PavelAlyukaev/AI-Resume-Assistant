@@ -16,3 +16,6 @@ __pycache__/
 
 node_modules/
 .playwright-mcp/
+
+# GSD research cache (tool output, not project docs)
+.planning/research/.cache/
