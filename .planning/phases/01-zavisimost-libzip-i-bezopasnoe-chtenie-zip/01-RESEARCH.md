@@ -79,7 +79,7 @@ Phase success criteria (ROADMAP) кроме SAFE-01/02 проверяются с
 ### Core
 | Library | Version | Purpose | Why Standard |
 |---------|---------|---------|--------------|
-| libzip (MSYS2 `mingw-w64-x86_64-libzip`) | **1.12.1-1** | Открытие ZIP из памяти, чтение записи по имени и индексу | Публичный C API, коды ошибок, BSD-3-Clause; единственная поддерживаемая ZIP-библиотека в репозитории MSYS2 mingw64, согласованная с решением STACK.md |
+| libzip (MSYS2 `mingw-w64-x86_64-libzip`) | **1.11.4-1** (установлена; владелец принял отклонение от 1.12.1-1 на checkpoint 01-01 Task 1, 2026-10-24) | Открытие ZIP из памяти, чтение записи по имени и индексу | Публичный C API, коды ошибок, BSD-3-Clause; единственная поддерживаемая ZIP-библиотека в репозитории MSYS2 mingw64, согласованная с решением STACK.md |
 | Qt 6 Core (`QFile`, `QByteArray`, `QFileInfo`) | 6.11.1 локально (минимум проекта 6.7) | Чтение файла по `QString`-пути, буферы | Уже в `resume_core` через `Qt6::Core`; wide-path API на Windows |
 
 **Version verification:** версия и состав пакета сняты со страницы MSYS2 (`packages.msys2.org`), не из памяти [CITED: packages.msys2.org/package/mingw-w64-x86_64-libzip]. Пакет на этой машине не установлен, поэтому фактическая версия после установки будет записана через `pacman -Q mingw-w64-x86_64-libzip` (команда для исполнителя, не запущена).
