@@ -12,10 +12,13 @@ add_library(resume_core STATIC
     src/domain/Resume.h
     src/application/ResumeJson.h
     src/application/ResumeJson.cpp
+    src/application/DocumentImport.h
+    src/application/DocumentImport.cpp
     src/storage/ResumeRepository.h
     src/storage/ResumeRepository.cpp
 )
-target_link_libraries(resume_core PUBLIC Qt6::Core Qt6::Sql)
+# resume_documents is linked here so the application layer can call the DOCX container reader.
+target_link_libraries(resume_core PUBLIC Qt6::Core Qt6::Sql resume_documents)
 target_include_directories(resume_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # DOCX container layer: libzip reads ZIP bytes held in memory (no path API, see ZipArchive.h).
@@ -102,6 +105,10 @@ add_test(NAME resume_json COMMAND resume_json_test)
 qt_add_executable(zip_archive_test tests/ZipArchiveTest.cpp)
 target_link_libraries(zip_archive_test PRIVATE resume_documents Qt6::Test)
 add_test(NAME zip_archive COMMAND zip_archive_test)
+
+qt_add_executable(document_import_test tests/DocumentImportTest.cpp)
+target_link_libraries(document_import_test PRIVATE resume_core Qt6::Test)
+add_test(NAME document_import COMMAND document_import_test)
 qt_add_executable(web_api_test tests/WebApiTest.cpp)
 target_link_libraries(web_api_test PRIVATE resume_web Qt6::Test)
 add_test(NAME web_api COMMAND web_api_test)
