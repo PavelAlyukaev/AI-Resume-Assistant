@@ -97,12 +97,6 @@ Heading outline (differentiator) needs heading detection
 Career-stage mapping (next milestone) needs paragraphs + headings + tables model
 ```
 
-### Dependency Notes
-
-- **Replace draft requires parse-first:** the draft swap must happen only after the full model exists, so a failed open never clears the editor.
-- **Text boxes conflict with simple paragraph walking:** a naive walk either drops them or reads them twice (Choice and Fallback). Decide the policy before planning.
-- **Heading and list detection depend on styles and numbering parts:** without them, every paragraph looks like body text.
-
 ## MVP Definition
 
 ### Launch With (this milestone)
@@ -124,24 +118,6 @@ Career-stage mapping (next milestone) needs paragraphs + headings + tables model
 - [ ] Password-protected DOCX support — only if users need it and key handling is designed
 - [ ] Layout fidelity — not needed for text-based workflow
 
-## Feature Prioritization Matrix
-
-| Feature | User Value | Implementation Cost | Priority |
-|---------|------------|---------------------|----------|
-| Paragraphs, headings, document order | HIGH | LOW–MEDIUM | P1 |
-| Lists with nesting | HIGH | MEDIUM | P1 |
-| Tables | HIGH | MEDIUM | P1 |
-| Hyperlink text and container unwrapping | HIGH | LOW | P1 |
-| Safe package and size checks, error messages | HIGH | MEDIUM | P1 |
-| Encrypted and `.doc` messages | MEDIUM | LOW | P1 |
-| Text boxes (no duplication) | HIGH for designed resumes | MEDIUM | P1 (decision needed) |
-| Header/footer block | MEDIUM | MEDIUM | P2 |
-| Undo of replaced draft | MEDIUM | MEDIUM | P2 |
-| Numbering formats, URL display | LOW | MEDIUM | P3 |
-| Legacy `.doc`, decryption | LOW for this milestone | HIGH | P3 |
-
-**Priority key:** P1 must have for this milestone; P2 add when possible; P3 future.
-
 ## Reference Behavior of Existing Readers
 
 | Feature | Mammoth.js (DOCX to HTML) | Apache POI (XWPF) | Our Approach |
@@ -149,9 +125,6 @@ Career-stage mapping (next milestone) needs paragraphs + headings + tables model
 | Text boxes | Read; content moved after the anchoring paragraph | Older bug reports say not read from .docx (LOW) | Read once, after anchor |
 | Headers / footers | Not described | `getText()` includes them; nested tables may be missed (LOW) | Separate labeled block |
 | Tables | Text kept; borders and table formatting ignored | Text extracted | Text kept, no borders |
-| Comments | Ignored by default | Included in some modes | Ignored and counted |
-| Empty paragraphs | Ignored by default | Kept | Collapse consecutive blanks |
-| Tracked changes | Not described | Not described | Accepted view (decision) |
 | Encryption | Not handled | Throws on encrypted input (LOW) | Detect and message |
 
 ## Open Questions for Requirements and Roadmap
