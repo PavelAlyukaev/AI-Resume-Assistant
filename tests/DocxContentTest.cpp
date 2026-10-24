@@ -246,6 +246,103 @@ class DocxContentTest : public QObject {
                 QVERIFY2(!message.contains(marker), "a parser message must not carry the marker");
         }
     }
+
+    void whitespaceAndCdataKept_data() {
+        QTest::addColumn<QByteArray>("body");
+        QTest::addColumn<QString>("expectedText");
+
+        QTest::newRow("xml:space preserve keeps a lone space")
+            << QByteArray("<w:p><w:r><w:t xml:space=\"preserve\"> </w:t></w:r></w:p>") << QStringLiteral(" ");
+        QTest::newRow("CDATA joins the text around it")
+            << QByteArray("<w:p><w:r><w:t>a<![CDATA[b]]>c</w:t></w:r></w:p>") << QStringLiteral("abc");
+        QTest::newRow("escaped ampersand")
+            << QByteArray("<w:p><w:r><w:t>A&amp;B</w:t></w:r></w:p>") << QStringLiteral("A&B");
+        QTest::newRow("empty w:t gives empty text")
+            << QByteArray("<w:p><w:r><w:t/></w:r></w:p>") << QString();
+        QTest::newRow("two runs keep the space between them")
+            << QStringLiteral("<w:p><w:r><w:t xml:space=\"preserve\">Опыт </w:t></w:r>"
+                              "<w:r><w:t>работы</w:t></w:r></w:p>")
+                   .toUtf8()
+            << QStringLiteral("Опыт работы");
+    }
+
+    void whitespaceAndCdataKept() {
+        QFETCH(QByteArray, body);
+        QFETCH(QString, expectedText);
+
+        auto result = documents::readDocxContent(partsWithBody(body));
+        QVERIFY2(result.has_value(), "a single paragraph body must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{1});
+        const auto *paragraph = std::get_if<documents::Paragraph>(&result->blocks.at(0).content);
+        QVERIFY2(paragraph != nullptr, "the single block is a paragraph");
+        QCOMPARE(paragraph->text, expectedText);
+    }
+
+    void interElementWhitespaceIgnored() {
+        // Indentation and line breaks between elements, outside w:t, must not reach the text.
+        const QByteArray body = QStringLiteral("\n  <w:p>\n    <w:pPr/>\n    <w:r>\n      <w:t>Текст</w:t>\n"
+                                               "    </w:r>\n  </w:p>\n")
+                                    .toUtf8();
+        auto result = documents::readDocxContent(partsWithBody(body));
+        QVERIFY2(result.has_value(), "indented body must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{1});
+        const auto *paragraph = std::get_if<documents::Paragraph>(&result->blocks.at(0).content);
+        QVERIFY2(paragraph != nullptr, "the single block is a paragraph");
+        QCOMPARE(paragraph->text, QStringLiteral("Текст"));
+    }
+
+    void cyrillicTextExact() {
+        const QString first = QStringLiteral("Ёлкина Йоханна — менеджер по продажам, стаж 5 лет");
+        const QString second = QStringLiteral("Пётр Сидоров");
+        auto result = documents::readDocxContent(partsWithBody(paragraphXml(first) + paragraphXml(second)));
+        QVERIFY2(result.has_value(), "the Cyrillic body must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{2});
+        const auto *one = std::get_if<documents::Paragraph>(&result->blocks.at(0).content);
+        const auto *two = std::get_if<documents::Paragraph>(&result->blocks.at(1).content);
+        QVERIFY2(one != nullptr && two != nullptr, "both blocks are paragraphs");
+        QCOMPARE(one->text, first);
+        QCOMPARE(two->text, second);
+    }
+
+    void textLimitBoundary() {
+        // 200 paragraphs of 1000 characters: exactly kMaxTextChars, accepted.
+        const QString chunk(1000, QChar(u'я'));
+        QByteArray body;
+        for (int i = 0; i < 200; ++i)
+            body += paragraphXml(chunk);
+        auto accepted = documents::readDocxContent(partsWithBody(body));
+        QVERIFY2(accepted.has_value(), "exactly kMaxTextChars must be accepted");
+        QCOMPARE(accepted->blocks.size(), qsizetype{200});
+        qsizetype total = 0;
+        for (const auto &block : accepted->blocks) {
+            const auto *paragraph = std::get_if<documents::Paragraph>(&block.content);
+            QVERIFY2(paragraph != nullptr, "every block is a paragraph");
+            total += paragraph->text.size();
+        }
+        QCOMPARE(total, qsizetype{200000});
+
+        // One more character, in a paragraph of its own: refused without a partial result.
+        body += paragraphXml(QStringLiteral("я"));
+        auto refused = documents::readDocxContent(partsWithBody(body));
+        QVERIFY2(!refused.has_value(), "one character over kMaxTextChars must be refused");
+        QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
+
+    void nodeLimitBoundary() {
+        // Empty paragraphs take six bytes each, so only the node count bounds them (T-02-02).
+        QByteArray body;
+        body.reserve(50001 * 6);
+        for (int i = 0; i < 50000; ++i)
+            body += QByteArrayLiteral("<w:p/>");
+        auto accepted = documents::readDocxContent(partsWithBody(body));
+        QVERIFY2(accepted.has_value(), "exactly kMaxModelNodes must be accepted");
+        QCOMPARE(accepted->blocks.size(), qsizetype{50000});
+
+        body += QByteArrayLiteral("<w:p/>");
+        auto refused = documents::readDocxContent(partsWithBody(body));
+        QVERIFY2(!refused.has_value(), "one node over kMaxModelNodes must be refused");
+        QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
 };
 
 QTEST_GUILESS_MAIN(DocxContentTest)

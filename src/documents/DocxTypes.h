@@ -47,7 +47,11 @@ inline constexpr qint64 kMaxCompressionRatio = 100;
 // Planner choice, enforced in plan 01-04. Value to confirm with the owner.
 inline constexpr qint64 kCompressionCheckAfterBytes = qint64{1024} * 1024;
 
-// D-03, enforced in Phase 2.
+// D-03: total text length in UTF-16 units, enforced in readDocxContent as the text accumulates.
 inline constexpr qint64 kMaxTextChars = 200000;
+
+// OQ9, T-02-02: limit on the number of model nodes (paragraphs, tables, rows, cells), enforced in
+// readDocxContent. A byte budget does not bound empty paragraphs, so the count is needed.
+inline constexpr qint64 kMaxModelNodes = 50000;
 
 } // namespace documents

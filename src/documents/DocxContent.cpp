@@ -77,9 +77,17 @@ std::expected<void, DocxError> skipElement(PartReader &reader) {
     }
 }
 
+// Running totals for one readDocxContent call. They are not per paragraph: text and nodes of
+// tables count toward the same totals in plan 02-03.
+struct ParseBudget {
+    qint64 textChars = 0; // UTF-16 units of all accepted text (D-03)
+    qint64 nodes = 0;     // model nodes created so far (OQ9, T-02-02)
+};
+
 // Reads one w:p up to its end tag. Text comes only from w:t; every other child is skipped whole.
-// Called right after the StartElement of w:p.
-std::expected<Paragraph, DocxError> readParagraph(PartReader &reader) {
+// Called right after the StartElement of w:p. Text that would pass kMaxTextChars is refused
+// before it is appended, so no partial text escapes.
+std::expected<Paragraph, DocxError> readParagraph(PartReader &reader, ParseBudget &budget) {
     Paragraph paragraph;
     qint64 depth = 0;      // open elements inside w:p; 0 means the w:p itself is current
     qint64 textDepth = -1; // depth of the open w:t, -1 when no w:t is open
@@ -101,8 +109,14 @@ std::expected<Paragraph, DocxError> readParagraph(PartReader &reader) {
             --depth;
             break;
         case QXmlStreamReader::Characters:
-            if (textDepth >= 0)
-                paragraph.text.append(reader.xml().text());
+            if (textDepth >= 0) {
+                // Every character token is kept as is, whitespace and CDATA included (DOCX-06).
+                const QStringView chunk = reader.xml().text();
+                budget.textChars += chunk.size();
+                if (budget.textChars > documents::kMaxTextChars)
+                    return std::unexpected(DocxError::Limit);
+                paragraph.text.append(chunk);
+            }
             break;
         case QXmlStreamReader::EndDocument:
             return std::unexpected(DocxError::Corrupt);
@@ -155,6 +169,7 @@ std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
 
     DocxDocument document;
     document.warnings = parts.warnings;
+    ParseBudget budget;
 
     // Direct children of w:body. Each child is consumed whole, so an EndElement seen here
     // at this level is the end of w:body.
@@ -165,7 +180,10 @@ std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
         switch (*token) {
         case QXmlStreamReader::StartElement:
             if (isWml(reader.xml(), kParagraph)) {
-                auto paragraph = readParagraph(reader);
+                // The node is counted before it is read, so a flood of empty paragraphs stops at the limit.
+                if (++budget.nodes > documents::kMaxModelNodes)
+                    return std::unexpected(DocxError::Limit);
+                auto paragraph = readParagraph(reader, budget);
                 if (!paragraph)
                     return std::unexpected(paragraph.error());
                 document.blocks.append(Block{std::move(*paragraph)});
