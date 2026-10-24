@@ -175,8 +175,16 @@ class DocumentImportTest : public QObject {
                 .arg(name),
             QStringLiteral("В файле «%1» не найден текст резюме. Сохраните его как .docx в Word и повторите.")
                 .arg(name),
+            QStringLiteral(
+                "Файл «%1» содержит DTD или внешние сущности XML, поэтому не открыт из соображений "
+                "безопасности. Сохраните резюме в Word как .docx заново и повторите.")
+                .arg(name),
+            QStringLiteral(
+                "Файл «%1» записан в кодировке XML, которую приложение не читает (поддерживаются UTF-8 и "
+                "UTF-16). Сохраните резюме в Word как .docx заново и повторите.")
+                .arg(name),
         };
-        QCOMPARE(texts.size(), qsizetype{5});
+        QCOMPARE(texts.size(), qsizetype{7});
         for (qsizetype i = 0; i < texts.size(); ++i)
             for (qsizetype j = i + 1; j < texts.size(); ++j)
                 QVERIFY2(texts.at(i) != texts.at(j), "two failure codes share one text");

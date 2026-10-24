@@ -28,6 +28,9 @@ add_library(resume_documents STATIC
     src/documents/ZipArchive.cpp
     src/documents/DocxContainer.h
     src/documents/DocxContainer.cpp
+    src/documents/DocxModel.h
+    src/documents/DocxContent.h
+    src/documents/DocxContent.cpp
 )
 target_link_libraries(resume_documents PUBLIC Qt6::Core libzip::zip)
 target_include_directories(resume_documents PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -105,6 +108,10 @@ add_test(NAME resume_json COMMAND resume_json_test)
 qt_add_executable(zip_archive_test tests/ZipArchiveTest.cpp)
 target_link_libraries(zip_archive_test PRIVATE resume_documents Qt6::Test)
 add_test(NAME zip_archive COMMAND zip_archive_test)
+
+qt_add_executable(docx_content_test tests/DocxContentTest.cpp)
+target_link_libraries(docx_content_test PRIVATE resume_documents Qt6::Test)
+add_test(NAME docx_content COMMAND docx_content_test)
 
 qt_add_executable(document_import_test tests/DocumentImportTest.cpp)
 target_link_libraries(document_import_test PRIVATE resume_core Qt6::Test)
