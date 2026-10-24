@@ -23,6 +23,29 @@ documents::DocxParts partsWithBody(const QByteArray &bodyXml) {
     return parts;
 }
 
+// Synthetic word/styles.xml: the w:styles root with the given style elements. These are our
+// reading of the format, not a file saved by Word (see the assumptions in 02-RESEARCH.md).
+QByteArray wrapStyles(const QByteArray &stylesBody) {
+    return QByteArrayLiteral(
+               "<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">") +
+           stylesBody + QByteArrayLiteral("</w:styles>");
+}
+
+// Parts with word/document.xml and word/styles.xml; numbering stays empty.
+documents::DocxParts partsWithStyles(const QByteArray &bodyXml, const QByteArray &stylesBody) {
+    documents::DocxParts parts;
+    parts.documentXml = wrapBody(bodyXml);
+    parts.stylesXml = wrapStyles(stylesBody);
+    return parts;
+}
+
+// The paragraph at index of the result; null when the block there is not a paragraph.
+const documents::Paragraph *paragraphAt(const documents::DocxDocument &document, qsizetype index) {
+    if (index < 0 || index >= document.blocks.size())
+        return nullptr;
+    return std::get_if<documents::Paragraph>(&document.blocks.at(index).content);
+}
+
 // One paragraph with one run and one text element. The text is inserted as raw XML.
 QByteArray paragraphXml(const QString &text) {
     return QStringLiteral("<w:p><w:r><w:t>%1</w:t></w:r></w:p>").arg(text).toUtf8();
@@ -342,6 +365,31 @@ class DocxContentTest : public QObject {
         auto refused = documents::readDocxContent(partsWithBody(body));
         QVERIFY2(!refused.has_value(), "one node over kMaxModelNodes must be refused");
         QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
+
+    void headingByStyleIdIsHeadingLevelOne() {
+        // Synthetic style: the styleId Heading1 with the English internal name, as Word writes it.
+        const QByteArray styles =
+            QStringLiteral("<w:style w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/>"
+                           "</w:style>")
+                .toUtf8();
+        const QByteArray body = QStringLiteral("<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
+                                               "<w:r><w:t>Опыт работы</w:t></w:r></w:p>")
+                                    .toUtf8() +
+                                paragraphXml(QStringLiteral("Обычный текст"));
+        auto result = documents::readDocxContent(partsWithStyles(body, styles));
+        QVERIFY2(result.has_value(), "a body with a styled heading and a plain paragraph must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{2});
+
+        const documents::Paragraph *heading = paragraphAt(*result, 0);
+        QVERIFY2(heading != nullptr, "the first block is a paragraph");
+        QCOMPARE(heading->text, QStringLiteral("Опыт работы"));
+        QCOMPARE(heading->headingLevel, 1);
+
+        const documents::Paragraph *plain = paragraphAt(*result, 1);
+        QVERIFY2(plain != nullptr, "the second block is a paragraph");
+        QCOMPARE(plain->text, QStringLiteral("Обычный текст"));
+        QCOMPARE(plain->headingLevel, 0);
     }
 };
 
