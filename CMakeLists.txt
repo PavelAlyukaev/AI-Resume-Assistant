@@ -6,6 +6,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Qt6 6.7 REQUIRED COMPONENTS Core Widgets Sql Network HttpServer Test)
+find_package(libzip CONFIG REQUIRED)
 qt_standard_project_setup()
 add_library(resume_core STATIC
     src/domain/Resume.h
@@ -16,6 +17,15 @@ add_library(resume_core STATIC
 )
 target_link_libraries(resume_core PUBLIC Qt6::Core Qt6::Sql)
 target_include_directories(resume_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# DOCX container layer: libzip reads ZIP bytes held in memory (no path API, see ZipArchive.h).
+add_library(resume_documents STATIC
+    src/documents/DocxTypes.h
+    src/documents/ZipArchive.h
+    src/documents/ZipArchive.cpp
+)
+target_link_libraries(resume_documents PUBLIC Qt6::Core libzip::zip)
+target_include_directories(resume_documents PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # Local web UI: loopback-only HTTP server with the HTML front end embedded as a resource.
 add_library(resume_web STATIC
@@ -82,6 +92,10 @@ set_tests_properties(resume_e2e PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscree
 qt_add_executable(resume_json_test tests/ResumeJsonTest.cpp)
 target_link_libraries(resume_json_test PRIVATE resume_core Qt6::Test)
 add_test(NAME resume_json COMMAND resume_json_test)
+
+qt_add_executable(zip_archive_test tests/ZipArchiveTest.cpp)
+target_link_libraries(zip_archive_test PRIVATE resume_documents Qt6::Test)
+add_test(NAME zip_archive COMMAND zip_archive_test)
 qt_add_executable(web_api_test tests/WebApiTest.cpp)
 target_link_libraries(web_api_test PRIVATE resume_web Qt6::Test)
 add_test(NAME web_api COMMAND web_api_test)
