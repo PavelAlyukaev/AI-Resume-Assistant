@@ -1,15 +1,18 @@
 # Phase 1: Зависимость libzip и безопасное чтение ZIP - Pattern Map
 
 **Mapped:** 2026-10-24
-**Files analyzed:** 11 (новых и изменяемых)
-**Analogs found:** 9 / 11
+**Files analyzed:** 14 (новых и изменяемых)
+**Analogs found:** 14 / 14 (у каждого файла таблицы указан аналог; части без прямого аналога перечислены в No Analog Found)
 
 ## File Classification
 
 | New/Modified File | Role | Data Flow | Closest Analog | Match Quality |
 |-------------------|------|-----------|----------------|---------------|
 | `src/documents/ZipArchive.h` / `.cpp` (новый) | service (wrapper над libzip) | file-I/O (из памяти) + transform | `src/storage/ResumeRepository.h` | role-match (RAII, запрет копирования, `QString* error`) |
-| `src/documents/DocxError.h` / `.cpp` (новый) | utility (enum кодов) | transform | `src/application/ResumeJson.h` | partial (namespace-API с ошибками) |
+| `src/documents/DocxTypes.h` (новый, header-only) | utility (enum кодов и лимитов) | transform | `src/application/ResumeJson.h` | partial (namespace-API с ошибками; без `.cpp`, тексты не хранятся) |
+| `src/documents/DocxContainer.h` / `.cpp` (новый) | service (функция `readDocxParts`) | transform + file-I/O (из памяти) | `src/application/ResumeJson.h` / `.cpp` | role-match (namespace-API, `std::expected`, коды ошибок) |
+| `tests/DocxFixtures.h` (новый) | test utility (общие билдеры) | batch (синтетические фикстуры) | `tests/ResumeJsonTest.cpp` | role-match (билдеры в одном заголовке, без бинарных файлов) |
+| `tests/DocumentImportTest.cpp` (новый) | test | file-I/O (QTemporaryDir, кириллица) | `tests/ResumeE2ETest.cpp` | role-match (Qt Test, `QTemporaryDir`) |
 | `src/application/DocumentImport.h` / `.cpp` (новый) | service (application) | file-I/O + request-response | `src/application/ResumeJson.h` / `.cpp` | role-match (слой application, проверки и текст ошибок) |
 | `src/documents/README.md` (заменить заглушку) | docs | — | `src/documents/README.md` (текущая заглушка) | exact (та же запись) |
 | `tests/ZipArchiveTest.cpp` (новый) | test | batch (синтетические фикстуры) | `tests/ResumeJsonTest.cpp` | exact (Qt Test, `QTEST_GUILESS_MAIN`) |
@@ -62,7 +65,7 @@ m_archive = zip_open_from_source(src, ZIP_RDONLY | ZIP_CHECKCONS, &err);
 
 ---
 
-### `src/documents/DocxError.h` / `.cpp` (utility, enum кодов)
+### `src/documents/DocxTypes.h` (utility, коды и лимиты, header-only)
 
 **Analog:** `src/application/ResumeJson.h` (namespace с публичным API и опциональным выходом ошибки)
 
@@ -82,7 +85,7 @@ std::optional<Resume> fromJson(const QJsonObject& object, QString* error = nullp
 
 } // namespace ResumeJson
 ```
-Для `DocxError` использовать `#pragma once`, `enum class DocxError { NotZip, Corrupt, Encrypted, LegacyDoc, TooLarge, Limit, MissingPart }` в namespace. Тексты здесь не хранить (D-04 задаёт их в application-слое). Комментарий-«контракт» в стиле строки 10 (`// Validates untrusted input ...`).
+Для `DocxTypes.h` использовать `#pragma once`, `namespace documents`, `enum class DocxError { NotZip, Corrupt, Encrypted, LegacyDoc, TooLarge, Limit, MissingPart }`, `enum class DocxWarning { StylesPartMissing, NumberingPartMissing }` и лимиты как `inline constexpr qint64` (см. Shared Patterns, «Ограничения по размеру»). Файла `.cpp` нет. Тексты здесь не хранить (D-04 задаёт их в application-слое). Комментарий-«контракт» в стиле строки 10 (`// Validates untrusted input ...`).
 
 ---
 
@@ -108,7 +111,7 @@ bool fail(QString* error, const QString& message) {
     return false;
 }
 ```
-Перенять: `constexpr` константы в анонимном namespace (лимиты D-01, D-02, D-03 — `kMaxDocxBytes`, `kMaxUnpackedBytes`, `kMaxResumeChars`), функцию `fail` в анонимном namespace. Не использовать `#include "..."` со своим именем для Qt-классов: Qt-заголовки подключать как `<QFile>`.
+Перенять: функцию `fail` в анонимном namespace. Лимиты D-01, D-02, D-03 здесь не объявляются, а берутся из `documents::` (`kMaxFileBytes`, `kMaxUnpackedBytes`, `kMaxTextChars`; см. Shared Patterns). Не использовать `#include "..."` со своим именем для Qt-классов: Qt-заголовки подключать как `<QFile>`.
 
 **Проверка входа с понятным сообщением** (`src/application/ResumeJson.cpp`, строки 17-34, сокращённо):
 ```cpp
@@ -121,8 +124,8 @@ bool readText(const QJsonObject& object, const QString& key, int maxLength, bool
 Перенять шаблон проверки длины с `return fail(error, ...)`. Внимание: существующие сообщения в `ResumeJson` написаны по-английски (`"Field '%1' is required"`). D-04 требует русских текстов для DOCX. Не копировать язык сообщений, только структуру (короткое сообщение с подстановкой имени поля). Имя файла подставлять через `QFileInfo(path).fileName()` (D-05), а не полный путь.
 
 **Core pattern для DocumentImport** (чтение файла, без аналога в репозитории):
-- `QFileInfo(path).size()` до чтения: если больше `kMaxDocxBytes`, сразу `TooLarge` (D-01).
-- `QFile` в режиме `ReadOnly`, `read(kMaxDocxBytes + 1)`; путь с кириллицей работает через `QString` (wide API на Windows). Передавать в `ZipArchive` уже `QByteArray`, а не путь.
+- `QFileInfo(path).size()` до чтения: если больше `kMaxFileBytes`, сразу `TooLarge` (D-01).
+- `QFile` в режиме `ReadOnly`, `read(kMaxFileBytes + 1)`; путь с кириллицей работает через `QString` (wide API на Windows). Передавать в `ZipArchive` уже `QByteArray`, а не путь.
 - Коды `DocxError` сопоставлять с русскими текстами здесь же (D-04, D-06).
 
 **Существующий образец хранения (для справки):** `src/storage/ResumeRepository.h`, строки 13-14 — `bool open(QString* error = nullptr); bool save(Resume& resume, QString* error = nullptr);`. Для `DocumentImport` использовать ту же сигнатуру: результат + `QString* error`, либо `std::expected`, если выбран C++23-вариант из RESEARCH.md. Выбрать один стиль и держаться его в фазе; в проекте сейчас используется `std::optional` + `QString* error`.
@@ -291,14 +294,11 @@ QTEST_GUILESS_MAIN(ResumeJsonTest)
 #include "ResumeJsonTest.moc"
 ```
 
-### Ограничения по размеру как константы в анонимном namespace
-**Source:** `src/application/ResumeJson.cpp`, строки 7-9
-**Apply to:** `DocumentImport.cpp` (D-01, D-03), `ZipArchive.cpp` (D-02)
-```cpp
-constexpr int kMaxShortText = 200;
-constexpr int kMaxDescription = 10000;
-constexpr int kMaxStages = 200;
-```
+### Ограничения по размеру как `inline constexpr` в `namespace documents`
+**Source:** `src/documents/DocxTypes.h` (план 01-02, Task 1, step 1); образец локальных констант одного файла — `src/application/ResumeJson.cpp`, строки 7-9
+**Apply to:** `DocxTypes.h` (определения), `DocxContainer.cpp` и `ZipArchive.cpp` (чтение), `DocumentImport.cpp` (проверка D-01 до открытия), тесты (границы)
+
+Лимиты документов объявляются один раз в `src/documents/DocxTypes.h` как `inline constexpr qint64`: `kMaxFileBytes` (D-01), `kMaxUnpackedBytes` (D-02), `kMaxTextChars` (D-03, проверяется в фазе 2), `kMaxEntries`, `kMaxCompressionRatio`, `kCompressionCheckAfterBytes` (значения планировщика). Application-слой берёт их через `documents::` и не копирует. Причина: `constexpr` в анонимном namespace каждого `.cpp` даёт отдельную копию значения, и слои и тесты могут разойтись. Блок `constexpr int` из `ResumeJson.cpp` остаётся образцом только для констант, которые нужны одному файлу.
 
 ### Форматирование
 **Source:** `.clang-format` — `BasedOnStyle: LLVM`, `IndentWidth: 4`, `ColumnLimit: 110`, `SortIncludes: CaseSensitive`.
