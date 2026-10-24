@@ -67,30 +67,30 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DOCX-01 | — | Pending |
-| DOCX-02 | — | Pending |
-| DOCX-03 | — | Pending |
-| DOCX-04 | — | Pending |
-| DOCX-05 | — | Pending |
-| DOCX-06 | — | Pending |
-| DOCX-07 | — | Pending |
-| DOCX-08 | — | Pending |
-| SAFE-01 | — | Pending |
-| SAFE-02 | — | Pending |
-| SAFE-03 | — | Pending |
-| SAFE-04 | — | Pending |
-| SAFE-05 | — | Pending |
-| UI-01 | — | Pending |
-| UI-02 | — | Pending |
-| UI-03 | — | Pending |
-| TEST-01 | — | Pending |
-| TEST-02 | — | Pending |
+| DOCX-01 | Phase 3 | Pending |
+| DOCX-02 | Phase 2 | Pending |
+| DOCX-03 | Phase 2 | Pending |
+| DOCX-04 | Phase 2 | Pending |
+| DOCX-05 | Phase 2 | Pending |
+| DOCX-06 | Phase 2 | Pending |
+| DOCX-07 | Phase 2 | Pending |
+| DOCX-08 | Phase 2 | Pending |
+| SAFE-01 | Phase 1 | Pending |
+| SAFE-02 | Phase 1 | Pending |
+| SAFE-03 | Phase 2 | Pending |
+| SAFE-04 | Phase 2 | Pending |
+| SAFE-05 | Phase 2 | Pending |
+| UI-01 | Phase 3 | Pending |
+| UI-02 | Phase 3 | Pending |
+| UI-03 | Phase 3 | Pending |
+| TEST-01 | Phase 2 | Pending |
+| TEST-02 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 18 total
-- Mapped to phases: 0 (заполнится при создании роадмапа)
-- Unmapped: 18 ⚠️
+- Mapped to phases: 18 (Phase 1: 2, Phase 2: 11, Phase 3: 5)
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-10-24*
-*Last updated: 2026-10-24 after user confirmation*
+*Last updated: 2026-10-24 after roadmap creation (traceability filled)*
