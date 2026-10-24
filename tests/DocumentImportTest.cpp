@@ -1,9 +1,13 @@
 #include "application/DocumentImport.h"
 #include "DocxFixtures.h"
+#include "documents/DocxTypes.h"
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
+#include <QFileInfo>
 #include <QIODevice>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtTest>
 
 using namespace fixtures;
@@ -20,6 +24,25 @@ bool writeBytes(const QString &path, const QByteArray &bytes) {
     if (!file.open(QIODevice::WriteOnly))
         return false;
     return file.write(bytes) == bytes.size();
+}
+
+// Sorted listing of every entry under root: relative path, kind, size and last-modified time.
+// Two listings that are equal prove that nothing was created, removed, resized or touched.
+QStringList snapshotTree(const QString &root) {
+    QStringList lines;
+    const QDir base(root);
+    QDirIterator it(root, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        const QFileInfo info = it.fileInfo();
+        const QString kind = info.isDir() ? QStringLiteral("dir") : QStringLiteral("file");
+        lines.append(QStringLiteral("%1|%2|%3|%4")
+                         .arg(base.relativeFilePath(info.filePath()), kind, QString::number(info.size()),
+                              QString::number(info.lastModified().toMSecsSinceEpoch())));
+    }
+    lines.sort();
+    return lines;
 }
 
 } // namespace
@@ -208,6 +231,130 @@ class DocumentImportTest : public QObject {
         auto complete = DocumentImport::readDocxFile(fullPath);
         QVERIFY2(complete.has_value(), "a complete DOCX must import");
         QVERIFY(complete->warnings.isEmpty());
+    }
+
+    void fileAboveLimitIsTooLargeBeforeOpen() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // One byte above the limit: refused by its size, with the limit stated in megabytes.
+        const QString name = QStringLiteral("Слишком_большой.docx");
+        const QString path = QDir(dir).filePath(name);
+        QVERIFY(writeBytes(path, QByteArray(documents::kMaxFileBytes + 1, '\0')));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(!result.has_value(), "a file above the limit must not import");
+        QCOMPARE(result.error(),
+                 QStringLiteral(
+                     "Файл «%1» больше %2 МБ. Уменьшите файл (например, удалите изображения) и повторите.")
+                     .arg(name, QStringLiteral("10")));
+    }
+
+    void fileOfExactlyLimitIsNotTooLarge() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // Exactly the limit is not refused by size; zero bytes are then classified by content.
+        const QString name = QStringLiteral("Ровно_лимит.docx");
+        const QString path = QDir(dir).filePath(name);
+        QVERIFY(writeBytes(path, QByteArray(documents::kMaxFileBytes, '\0')));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(!result.has_value(), "zero bytes must not import");
+        QCOMPARE(result.error(), QStringLiteral("Файл «%1» не является DOCX: это не ZIP-архив. Сохраните "
+                                                "резюме в Word как .docx и повторите.")
+                                     .arg(name));
+    }
+
+    void importWritesNothing() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        struct Input {
+            QString name;
+            QByteArray bytes;
+        };
+        const QByteArray garbage = QByteArray("PK\x03\x04", 4) + QByteArray(64, 'Z');
+        const QList<Input> inputs = {
+            {QStringLiteral("Полный.docx"),
+             buildStoredZip({
+                 ZipEntry{"word/document.xml", QStringLiteral("<w:document/>").toUtf8()},
+                 ZipEntry{"word/styles.xml", QStringLiteral("<w:styles/>").toUtf8()},
+                 ZipEntry{"word/numbering.xml", QStringLiteral("<w:numbering/>").toUtf8()},
+             })},
+            {QStringLiteral("Текст.docx"), QStringLiteral("Обычный текст").toUtf8()},
+            {QStringLiteral("Мусор.docx"), garbage},
+            {QStringLiteral("Шифр.docx"), buildCfb(true)},
+            {QStringLiteral("Старый.docx"), buildCfb(false)},
+            {QStringLiteral("Чужой.docx"), buildStoredZip({ZipEntry{"docProps/core.xml", "<core/>"}})},
+            {QStringLiteral("Большой.docx"), QByteArray(documents::kMaxFileBytes + 1, '\0')},
+        };
+        for (const Input &input : inputs)
+            QVERIFY(writeBytes(QDir(dir).filePath(input.name), input.bytes));
+
+        // NTFS updates directory timestamps lazily: a listing taken right after the inputs were
+        // written can show an older directory time than a listing taken a moment later, with no
+        // operation in between. The baseline is therefore the first listing that a second listing
+        // confirms, so every later difference is caused by the calls below.
+        QStringList before = snapshotTree(root.path());
+        bool settled = false;
+        for (int attempt = 0; attempt < 50 && !settled; ++attempt) {
+            QThread::msleep(100);
+            const QStringList again = snapshotTree(root.path());
+            settled = (again == before);
+            before = again;
+        }
+        QVERIFY2(settled, "the directory listing never settled before the calls");
+        QVERIFY(!before.isEmpty());
+
+        // Each call must leave the listing unchanged: names, kinds, sizes and times.
+        for (const Input &input : inputs) {
+            [[maybe_unused]] const auto result = DocumentImport::readDocxFile(QDir(dir).filePath(input.name));
+            QCOMPARE(snapshotTree(root.path()), before);
+        }
+    }
+
+    void messagesLeakNeitherPathNorContent() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // Marker: capital Cyrillic letters and a digit run. It is planted in document bodies and
+        // in an unrelated archive entry; no message may repeat it.
+        const QString marker = QStringLiteral("СЕКРЕТНЫЙ-МАРКЕР-90817263");
+        const QByteArray markerBytes = marker.toUtf8();
+        const QByteArray garbage = QByteArray("PK\x03\x04", 4) + QByteArray(64, 'Z');
+
+        struct Input {
+            QString name;
+            QByteArray bytes;
+        };
+        const QList<Input> inputs = {
+            {QStringLiteral("Текст.docx"), QStringLiteral("Обычный текст ").toUtf8() + markerBytes},
+            {QStringLiteral("Мусор.docx"), garbage + markerBytes},
+            {QStringLiteral("Шифр.docx"), buildCfb(true) + markerBytes},
+            {QStringLiteral("Старый.docx"), buildCfb(false) + markerBytes},
+            {QStringLiteral("Без_текста.docx"), buildStoredZip({ZipEntry{"docProps/core.xml", markerBytes}})},
+        };
+        for (const Input &input : inputs) {
+            const QString path = QDir(dir).filePath(input.name);
+            QVERIFY(writeBytes(path, input.bytes));
+
+            auto result = DocumentImport::readDocxFile(path);
+            QVERIFY2(!result.has_value(), "every planted input must be refused");
+            const QString &message = result.error();
+            QVERIFY2(!message.contains(marker), "a message must not carry document content");
+            QVERIFY2(!message.contains(root.path()), "a message must not carry the full directory path");
+            QVERIFY2(!message.contains(dir), "a message must not carry the full file path");
+            QVERIFY2(!message.contains(cyrillicSubdirName()), "a message must not carry the directory name");
+        }
     }
 };
 

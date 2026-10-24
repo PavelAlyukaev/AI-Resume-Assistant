@@ -21,7 +21,8 @@ QString unreadableText(const QString &fileName) {
 // Two placeholders: the multi-argument arg() replaces both in one pass, so a file name that
 // contains "%2" is not replaced a second time.
 QString tooLargeText(const QString &fileName) {
-    const qint64 limitMb = documents::kMaxFileBytes / (1024 * 1024);
+    constexpr qint64 bytesPerMb = qint64{1024} * 1024;
+    const qint64 limitMb = documents::kMaxFileBytes / bytesPerMb;
     return QStringLiteral(
                "Файл «%1» больше %2 МБ. Уменьшите файл (например, удалите изображения) и повторите.")
         .arg(fileName, QString::number(limitMb));
