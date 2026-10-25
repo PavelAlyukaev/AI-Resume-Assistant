@@ -80,6 +80,11 @@ QString warningText(documents::DocxWarning code, const QString &fileName) {
         return QStringLiteral(
                    "В файле «%1» нет описания нумерации: списки могут отображаться без маркеров и номеров.")
             .arg(fileName);
+    case documents::DocxWarning::ListFormatApproximated:
+        return QStringLiteral(
+                   "В файле «%1» есть список с нумерацией, которую приложение показывает упрощённо: номера "
+                   "показаны в виде «1.», «2.».")
+            .arg(fileName);
     }
     return {};
 }

@@ -23,6 +23,111 @@ documents::DocxParts partsWithBody(const QByteArray &bodyXml) {
     return parts;
 }
 
+// Synthetic word/styles.xml: the w:styles root with the given style elements. These are our
+// reading of the format, not a file saved by Word (see the assumptions in 02-RESEARCH.md).
+QByteArray wrapStyles(const QByteArray &stylesBody) {
+    return QByteArrayLiteral(
+               "<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">") +
+           stylesBody + QByteArrayLiteral("</w:styles>");
+}
+
+// Parts with word/document.xml and word/styles.xml; numbering stays empty.
+documents::DocxParts partsWithStyles(const QByteArray &bodyXml, const QByteArray &stylesBody) {
+    documents::DocxParts parts;
+    parts.documentXml = wrapBody(bodyXml);
+    parts.stylesXml = wrapStyles(stylesBody);
+    return parts;
+}
+
+// The paragraph at index of the result; null when the block there is not a paragraph.
+const documents::Paragraph *paragraphAt(const documents::DocxDocument &document, qsizetype index) {
+    if (index < 0 || index >= document.blocks.size())
+        return nullptr;
+    return std::get_if<documents::Paragraph>(&document.blocks.at(index).content);
+}
+
+// One paragraph with the text "Текст". pPrChildren are the children of its w:pPr; an empty value
+// gives a paragraph without w:pPr.
+QByteArray paragraphWithProps(const QByteArray &pPrChildren) {
+    QByteArray xml = "<w:p>";
+    if (!pPrChildren.isEmpty())
+        xml += "<w:pPr>" + pPrChildren + "</w:pPr>";
+    xml += QStringLiteral("<w:r><w:t>Текст</w:t></w:r></w:p>").toUtf8();
+    return xml;
+}
+
+// The w:numPr of one paragraph: its level and its numId.
+QByteArray numPrXml(int ilvl, int numId) {
+    return "<w:numPr><w:ilvl w:val=\"" + QByteArray::number(ilvl) + "\"/><w:numId w:val=\"" +
+           QByteArray::number(numId) + "\"/></w:numPr>";
+}
+
+// One w:lvl. The start, pStyle and lvlText children are written only when the value is not empty.
+QByteArray levelXml(int ilvl, const QByteArray &numFmt, const QByteArray &lvlText = {},
+                    const QByteArray &pStyle = {}, const QByteArray &start = {}) {
+    QByteArray xml = "<w:lvl w:ilvl=\"" + QByteArray::number(ilvl) + "\">";
+    if (!start.isEmpty())
+        xml += "<w:start w:val=\"" + start + "\"/>";
+    xml += "<w:numFmt w:val=\"" + numFmt + "\"/>";
+    if (!pStyle.isEmpty())
+        xml += "<w:pStyle w:val=\"" + pStyle + "\"/>";
+    if (!lvlText.isEmpty())
+        xml += "<w:lvlText w:val=\"" + lvlText + "\"/>";
+    return xml + "</w:lvl>";
+}
+
+// A w:abstractNum with the given levels.
+QByteArray abstractNumXml(int abstractId, const QByteArray &levels) {
+    return "<w:abstractNum w:abstractNumId=\"" + QByteArray::number(abstractId) + "\">" + levels +
+           "</w:abstractNum>";
+}
+
+// A w:num that maps numId to abstractId.
+QByteArray numXml(int numId, int abstractId) {
+    return "<w:num w:numId=\"" + QByteArray::number(numId) + "\"><w:abstractNumId w:val=\"" +
+           QByteArray::number(abstractId) + "\"/></w:num>";
+}
+
+// Nine levels (0 to 8) of one format; lvlText is written on each level when it is not empty.
+QByteArray nineLevels(const QByteArray &numFmt, const QByteArray &lvlText = {}) {
+    QByteArray levels;
+    for (int ilvl = 0; ilvl < 9; ++ilvl)
+        levels += levelXml(ilvl, numFmt, lvlText);
+    return levels;
+}
+
+// Synthetic word/numbering.xml around the given abstractNum and num elements.
+QByteArray wrapNumbering(const QByteArray &numberingBody) {
+    return QByteArrayLiteral(
+               "<w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">") +
+           numberingBody + QByteArrayLiteral("</w:numbering>");
+}
+
+// Parts with word/document.xml, word/numbering.xml and word/styles.xml (styles may be empty).
+documents::DocxParts partsWithLists(const QByteArray &bodyXml, const QByteArray &numberingBody,
+                                    const QByteArray &stylesBody = {}) {
+    documents::DocxParts parts;
+    parts.documentXml = wrapBody(bodyXml);
+    parts.numberingXml = wrapNumbering(numberingBody);
+    parts.stylesXml = wrapStyles(stylesBody);
+    return parts;
+}
+
+// numId 1: bullets on nine levels. numId 2: decimal "N." on nine levels.
+QByteArray bulletAndDecimalNumbering() {
+    return abstractNumXml(0, nineLevels("bullet")) + abstractNumXml(1, nineLevels("decimal", "%1.")) +
+           numXml(1, 0) + numXml(2, 1);
+}
+
+// numId 1 to 5, one level each: lowerLetter, upperRoman, decimal "%1.", decimal "%1)", bullet with a
+// text that is not a bullet character. Only numIds 3 and 5 are reproduced exactly.
+QByteArray mixedFormatsNumbering() {
+    return abstractNumXml(0, levelXml(0, "lowerLetter")) + abstractNumXml(1, levelXml(0, "upperRoman")) +
+           abstractNumXml(2, levelXml(0, "decimal", "%1.")) +
+           abstractNumXml(3, levelXml(0, "decimal", "%1)")) + abstractNumXml(4, levelXml(0, "bullet", "x")) +
+           numXml(1, 0) + numXml(2, 1) + numXml(3, 2) + numXml(4, 3) + numXml(5, 4);
+}
+
 // One paragraph with one run and one text element. The text is inserted as raw XML.
 QByteArray paragraphXml(const QString &text) {
     return QStringLiteral("<w:p><w:r><w:t>%1</w:t></w:r></w:p>").arg(text).toUtf8();
@@ -342,6 +447,288 @@ class DocxContentTest : public QObject {
         auto refused = documents::readDocxContent(partsWithBody(body));
         QVERIFY2(!refused.has_value(), "one node over kMaxModelNodes must be refused");
         QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
+
+    void headingByStyleIdIsHeadingLevelOne() {
+        // Synthetic style: the styleId Heading1 with the English internal name, as Word writes it.
+        const QByteArray styles =
+            QStringLiteral("<w:style w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/>"
+                           "</w:style>")
+                .toUtf8();
+        const QByteArray body = QStringLiteral("<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
+                                               "<w:r><w:t>Опыт работы</w:t></w:r></w:p>")
+                                    .toUtf8() +
+                                paragraphXml(QStringLiteral("Обычный текст"));
+        auto result = documents::readDocxContent(partsWithStyles(body, styles));
+        QVERIFY2(result.has_value(), "a body with a styled heading and a plain paragraph must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{2});
+
+        const documents::Paragraph *heading = paragraphAt(*result, 0);
+        QVERIFY2(heading != nullptr, "the first block is a paragraph");
+        QCOMPARE(heading->text, QStringLiteral("Опыт работы"));
+        QCOMPARE(heading->headingLevel, 1);
+
+        const documents::Paragraph *plain = paragraphAt(*result, 1);
+        QVERIFY2(plain != nullptr, "the second block is a paragraph");
+        QCOMPARE(plain->text, QStringLiteral("Обычный текст"));
+        QCOMPARE(plain->headingLevel, 0);
+    }
+
+    // Each row is one paragraph with its w:pPr children and the styles it may refer to. The Russian
+    // name rows are synthetic (assumption A1, phase 3 checks a real Word file).
+    void headingByStyleIdNameOrOutline_data() {
+        QTest::addColumn<QByteArray>("stylesBody");
+        QTest::addColumn<QByteArray>("pPrChildren");
+        QTest::addColumn<int>("expectedLevel");
+
+        const auto pStyle = [](const QByteArray &id) {
+            return QByteArray("<w:pStyle w:val=\"") + id + "\"/>";
+        };
+        const auto styleName = [](const QByteArray &id, const QString &name) {
+            return QByteArray("<w:style w:styleId=\"") + id + "\"><w:name w:val=\"" + name.toUtf8() +
+                   "\"/></w:style>";
+        };
+
+        QTest::newRow("styleId Heading3")
+            << QByteArray("<w:style w:styleId=\"Heading3\"/>") << pStyle("Heading3") << 3;
+        QTest::newRow("name heading 4 under styleId x")
+            << styleName("x", QStringLiteral("heading 4")) << pStyle("x") << 4;
+        QTest::newRow("name is case-insensitive: HEADING 1")
+            << styleName("Up", QStringLiteral("HEADING 1")) << pStyle("Up") << 1;
+        QTest::newRow("Russian name Заголовок 2 under styleId a0")
+            << styleName("a0", QStringLiteral("Заголовок 2")) << pStyle("a0") << 2;
+        QTest::newRow("Russian name Заголовок without digit is not a heading")
+            << styleName("a1", QStringLiteral("Заголовок")) << pStyle("a1") << 0;
+        QTest::newRow("outlineLvl 2 without a heading name")
+            << QByteArray("<w:style w:styleId=\"Sec\"><w:pPr><w:outlineLvl w:val=\"2\"/></w:pPr></w:style>")
+            << pStyle("Sec") << 3;
+        QTest::newRow("Custom based on Heading2")
+            << QByteArray("<w:style w:styleId=\"Heading2\"/><w:style w:styleId=\"Custom\"><w:basedOn "
+                          "w:val=\"Heading2\"/></w:style>")
+            << pStyle("Custom") << 2;
+        QTest::newRow("styleId Heading10 is not a heading")
+            << QByteArray("<w:style w:styleId=\"Heading10\"/>") << pStyle("Heading10") << 0;
+        QTest::newRow("name heading 0 is not a heading")
+            << styleName("Zero", QStringLiteral("heading 0")) << pStyle("Zero") << 0;
+        QTest::newRow("outlineLvl 9 in the style is not a heading")
+            << QByteArray("<w:style w:styleId=\"Plain\"><w:pPr><w:outlineLvl w:val=\"9\"/></w:pPr></w:style>")
+            << pStyle("Plain") << 0;
+        QTest::newRow("name Title is not a heading")
+            << styleName("Title", QStringLiteral("Title")) << pStyle("Title") << 0;
+        QTest::newRow("direct outlineLvl 0 on a paragraph without style")
+            << QByteArray() << QByteArray("<w:outlineLvl w:val=\"0\"/>") << 1;
+        QTest::newRow("direct outlineLvl 9 beats the Heading2 style")
+            << QByteArray("<w:style w:styleId=\"Heading2\"/>")
+            << QByteArray("<w:pStyle w:val=\"Heading2\"/><w:outlineLvl w:val=\"9\"/>") << 0;
+        QTest::newRow("outlineLvl 9 in the style beats basedOn Heading2")
+            << QByteArray("<w:style w:styleId=\"Heading2\"/><w:style w:styleId=\"Custom\"><w:basedOn "
+                          "w:val=\"Heading2\"/><w:pPr><w:outlineLvl w:val=\"9\"/></w:pPr></w:style>")
+            << pStyle("Custom") << 0;
+    }
+
+    void headingByStyleIdNameOrOutline() {
+        QFETCH(QByteArray, stylesBody);
+        QFETCH(QByteArray, pPrChildren);
+        QFETCH(int, expectedLevel);
+
+        auto result =
+            documents::readDocxContent(partsWithStyles(paragraphWithProps(pPrChildren), stylesBody));
+        QVERIFY2(result.has_value(), "a single paragraph with styles must parse");
+        const documents::Paragraph *paragraph = paragraphAt(*result, 0);
+        QVERIFY2(paragraph != nullptr, "the block is a paragraph");
+        QCOMPARE(paragraph->text, QStringLiteral("Текст"));
+        QCOMPARE(paragraph->headingLevel, expectedLevel);
+    }
+
+    void cyclicBasedOnTerminates() {
+        // A is based on B and B on A: the walk ends after both styles, with no heading and no error.
+        const QByteArray styles =
+            QStringLiteral("<w:style w:styleId=\"A\"><w:basedOn w:val=\"B\"/></w:style>"
+                           "<w:style w:styleId=\"B\"><w:basedOn w:val=\"A\"/></w:style>")
+                .toUtf8();
+        auto result = documents::readDocxContent(
+            partsWithStyles(paragraphWithProps("<w:pStyle w:val=\"A\"/>"), styles));
+        QVERIFY2(result.has_value(), "a cycle in basedOn is bad style data, not an error");
+        const documents::Paragraph *paragraph = paragraphAt(*result, 0);
+        QVERIFY2(paragraph != nullptr, "the block is a paragraph");
+        QCOMPARE(paragraph->text, QStringLiteral("Текст"));
+        QCOMPARE(paragraph->headingLevel, 0);
+    }
+
+    void styleChainDepthIsBounded() {
+        // A chain of styles S0..S(n-1) based on each other; the last one is a heading named "heading 2".
+        // The chain is followed up to kMaxStyleChainDepth (16) styles, so the heading is reached at 10
+        // styles and not at 20.
+        const auto chainOf = [](int count) {
+            QByteArray styles;
+            for (int i = 0; i + 1 < count; ++i)
+                styles += "<w:style w:styleId=\"S" + QByteArray::number(i) + "\"><w:basedOn w:val=\"S" +
+                          QByteArray::number(i + 1) + "\"/></w:style>";
+            styles += "<w:style w:styleId=\"S" + QByteArray::number(count - 1) +
+                      "\"><w:name w:val=\"heading 2\"/></w:style>";
+            return styles;
+        };
+        const QByteArray paragraph = paragraphWithProps("<w:pStyle w:val=\"S0\"/>");
+
+        auto shallow = documents::readDocxContent(partsWithStyles(paragraph, chainOf(10)));
+        QVERIFY2(shallow.has_value(), "a chain of 10 styles must parse");
+        const documents::Paragraph *shallowParagraph = paragraphAt(*shallow, 0);
+        QVERIFY2(shallowParagraph != nullptr, "the block is a paragraph");
+        QCOMPARE(shallowParagraph->headingLevel, 2);
+
+        auto deep = documents::readDocxContent(partsWithStyles(paragraph, chainOf(20)));
+        QVERIFY2(deep.has_value(), "a chain of 20 styles must parse");
+        const documents::Paragraph *deepParagraph = paragraphAt(*deep, 0);
+        QVERIFY2(deepParagraph != nullptr, "the block is a paragraph");
+        QCOMPARE(deepParagraph->headingLevel, 0);
+    }
+
+    void listsKeepKindAndLevel_data() {
+        QTest::addColumn<QByteArray>("numPr");
+        QTest::addColumn<int>("expectedLevel");
+        QTest::addColumn<bool>("expectBullet");
+        QTest::addColumn<QString>("expectedMarker");
+
+        const QString bullet(QChar(0x2022));
+        QTest::newRow("bullet level 0") << numPrXml(0, 1) << 0 << true << bullet;
+        QTest::newRow("bullet level 1") << numPrXml(1, 1) << 1 << true << bullet;
+        QTest::newRow("bullet level 2") << numPrXml(2, 1) << 2 << true << bullet;
+        QTest::newRow("ilvl above 8 is level 8") << numPrXml(12, 1) << 8 << true << bullet;
+        QTest::newRow("negative ilvl is level 0")
+            << QByteArray("<w:numPr><w:ilvl w:val=\"-3\"/><w:numId w:val=\"1\"/></w:numPr>") << 0 << true
+            << bullet;
+        QTest::newRow("numId 0 is not a list") << numPrXml(0, 0) << -1 << false << QString();
+        QTest::newRow("numId missing from numbering is not a list")
+            << numPrXml(0, 7) << -1 << false << QString();
+        QTest::newRow("decimal level 0 is numbered 1.")
+            << numPrXml(0, 2) << 0 << false << QStringLiteral("1.");
+    }
+
+    void listsKeepKindAndLevel() {
+        QFETCH(QByteArray, numPr);
+        QFETCH(int, expectedLevel);
+        QFETCH(bool, expectBullet);
+        QFETCH(QString, expectedMarker);
+
+        auto result = documents::readDocxContent(
+            partsWithLists(paragraphWithProps(numPr), bulletAndDecimalNumbering()));
+        QVERIFY2(result.has_value(), "a list paragraph must parse");
+        const documents::Paragraph *paragraph = paragraphAt(*result, 0);
+        QVERIFY2(paragraph != nullptr, "the block is a paragraph");
+        QCOMPARE(paragraph->text, QStringLiteral("Текст"));
+        QCOMPARE(paragraph->listLevel, expectedLevel);
+        QCOMPARE(paragraph->listMarker, expectedMarker);
+        if (expectedLevel >= 0)
+            QCOMPARE(paragraph->listKind == documents::ListKind::Bullet, expectBullet);
+    }
+
+    void numberedCountersRestartOnHigherLevel() {
+        // Levels 0, 1, 1, 0, 1 of one decimal list give the markers 1., 1., 2., 2., 1.
+        const QByteArray body = paragraphWithProps(numPrXml(0, 2)) + paragraphWithProps(numPrXml(1, 2)) +
+                                paragraphWithProps(numPrXml(1, 2)) + paragraphWithProps(numPrXml(0, 2)) +
+                                paragraphWithProps(numPrXml(1, 2));
+        auto result = documents::readDocxContent(partsWithLists(body, bulletAndDecimalNumbering()));
+        QVERIFY2(result.has_value(), "a numbered list must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{5});
+
+        const QStringList expected = {QStringLiteral("1."), QStringLiteral("1."), QStringLiteral("2."),
+                                      QStringLiteral("2."), QStringLiteral("1.")};
+        for (qsizetype i = 0; i < result->blocks.size(); ++i) {
+            const documents::Paragraph *paragraph = paragraphAt(*result, i);
+            QVERIFY2(paragraph != nullptr, "every block is a paragraph");
+            QCOMPARE(paragraph->listMarker, expected.at(i));
+        }
+    }
+
+    void styleNumPrLevelFromPStyle() {
+        // ListHeader carries numId 3 without an ilvl. Level 1 of abstract 2 names ListHeader in its
+        // w:pStyle, so the paragraph with that style is at level 1. A paragraph with its own numPr
+        // (no pStyle) at ilvl 0 is at level 0.
+        const QByteArray styles =
+            QStringLiteral(
+                "<w:style w:styleId=\"ListHeader\"><w:pPr><w:numPr><w:numId w:val=\"3\"/></w:numPr>"
+                "</w:pPr></w:style>")
+                .toUtf8();
+        const QByteArray numbering =
+            abstractNumXml(2, levelXml(0, "decimal", "%1.") + levelXml(1, "decimal", {}, "ListHeader")) +
+            numXml(3, 2);
+        const QByteArray body =
+            paragraphWithProps("<w:pStyle w:val=\"ListHeader\"/>") + paragraphWithProps(numPrXml(0, 3));
+        auto result = documents::readDocxContent(partsWithLists(body, numbering, styles));
+        QVERIFY2(result.has_value(), "a list taken from a style must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{2});
+
+        const documents::Paragraph *fromStyle = paragraphAt(*result, 0);
+        QVERIFY2(fromStyle != nullptr, "the first block is a paragraph");
+        QCOMPARE(fromStyle->listLevel, 1);
+        QVERIFY(fromStyle->listKind == documents::ListKind::Ordered);
+        QCOMPARE(fromStyle->listMarker, QStringLiteral("1."));
+
+        const documents::Paragraph *own = paragraphAt(*result, 1);
+        QVERIFY2(own != nullptr, "the second block is a paragraph");
+        QCOMPARE(own->listLevel, 0);
+        QCOMPARE(own->listMarker, QStringLiteral("1."));
+    }
+
+    void numberingStartClamped() {
+        // Start -5 becomes 1; 2000000000 becomes 1000000; 3 stays 3.
+        const QByteArray numbering = abstractNumXml(0, levelXml(0, "decimal", "%1.", {}, "-5")) +
+                                     abstractNumXml(1, levelXml(0, "decimal", "%1.", {}, "2000000000")) +
+                                     abstractNumXml(2, levelXml(0, "decimal", "%1.", {}, "3")) +
+                                     numXml(1, 0) + numXml(2, 1) + numXml(3, 2);
+        const QByteArray body = paragraphWithProps(numPrXml(0, 1)) + paragraphWithProps(numPrXml(0, 2)) +
+                                paragraphWithProps(numPrXml(0, 3));
+        auto result = documents::readDocxContent(partsWithLists(body, numbering));
+        QVERIFY2(result.has_value(), "start values outside the range must still parse");
+        QCOMPARE(result->blocks.size(), qsizetype{3});
+
+        const QStringList expected = {QStringLiteral("1."), QStringLiteral("1000000."), QStringLiteral("3.")};
+        for (qsizetype i = 0; i < result->blocks.size(); ++i) {
+            const documents::Paragraph *paragraph = paragraphAt(*result, i);
+            QVERIFY2(paragraph != nullptr, "every block is a paragraph");
+            QCOMPARE(paragraph->listMarker, expected.at(i));
+        }
+    }
+
+    void unsupportedNumberingFormatCountedOncePerList_data() {
+        QTest::addColumn<int>("firstNumId");
+        QTest::addColumn<int>("secondNumId");
+        QTest::addColumn<int>("expectedWarnings");
+        QTest::addColumn<QString>("firstMarker");
+        QTest::addColumn<QString>("secondMarker");
+
+        const QString bullet(QChar(0x2022));
+        QTest::newRow("lowerLetter: one warning for the list, markers 1. and 2.")
+            << 1 << 1 << 1 << QStringLiteral("1.") << QStringLiteral("2.");
+        QTest::newRow("lowerLetter and upperRoman are two lists: two warnings")
+            << 1 << 2 << 2 << QStringLiteral("1.") << QStringLiteral("1.");
+        QTest::newRow("decimal with %1. is exact: no warning")
+            << 3 << 3 << 0 << QStringLiteral("1.") << QStringLiteral("2.");
+        QTest::newRow("decimal with %1) is approximated: one warning, no parenthesis in the marker")
+            << 4 << 4 << 1 << QStringLiteral("1.") << QStringLiteral("2.");
+        QTest::newRow("bullet with any lvlText is exact: no warning") << 5 << 5 << 0 << bullet << bullet;
+    }
+
+    void unsupportedNumberingFormatCountedOncePerList() {
+        QFETCH(int, firstNumId);
+        QFETCH(int, secondNumId);
+        QFETCH(int, expectedWarnings);
+        QFETCH(QString, firstMarker);
+        QFETCH(QString, secondMarker);
+
+        const QByteArray body =
+            paragraphWithProps(numPrXml(0, firstNumId)) + paragraphWithProps(numPrXml(0, secondNumId));
+        auto result = documents::readDocxContent(partsWithLists(body, mixedFormatsNumbering()));
+        QVERIFY2(result.has_value(), "unsupported formats are approximated, not refused");
+        QCOMPARE(result->warnings.count(documents::DocxWarning::ListFormatApproximated),
+                 qsizetype{expectedWarnings});
+
+        const documents::Paragraph *first = paragraphAt(*result, 0);
+        QVERIFY2(first != nullptr, "the first block is a paragraph");
+        QCOMPARE(first->listMarker, firstMarker);
+        const documents::Paragraph *second = paragraphAt(*result, 1);
+        QVERIFY2(second != nullptr, "the second block is a paragraph");
+        QCOMPARE(second->listMarker, secondMarker);
     }
 };
 
