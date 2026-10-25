@@ -138,6 +138,12 @@ QByteArray documentWithProlog(const QByteArray &prolog, const QByteArray &bodyXm
     return prolog + wrapBody(bodyXml);
 }
 
+// A table with one grid column and one row whose single cell holds cellXml.
+QByteArray oneCellTable(const QByteArray &cellXml) {
+    return QByteArrayLiteral("<w:tbl><w:tblGrid><w:gridCol w:w=\"9000\"/></w:tblGrid><w:tr><w:tc>") +
+           cellXml + QByteArrayLiteral("</w:tc></w:tr></w:tbl>");
+}
+
 constexpr auto kUtf8Declaration = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
 
 // UTF-16 bytes with a byte-order mark. QString::utf16() gives host (little-endian) order here.
@@ -729,6 +735,49 @@ class DocxContentTest : public QObject {
         const documents::Paragraph *second = paragraphAt(*result, 1);
         QVERIFY2(second != nullptr, "the second block is a paragraph");
         QCOMPARE(second->listMarker, secondMarker);
+    }
+
+    void tableWithOneRowKeepsCells() {
+        const QByteArray table =
+            QByteArrayLiteral(
+                "<w:tbl><w:tblGrid><w:gridCol w:w=\"2000\"/><w:gridCol w:w=\"3000\"/></w:tblGrid>"
+                "<w:tr><w:tc>") +
+            paragraphXml(QStringLiteral("Ячейка А")) + QByteArrayLiteral("</w:tc><w:tc>") +
+            paragraphXml(QStringLiteral("Ячейка Б")) + QByteArrayLiteral("</w:tc></w:tr></w:tbl>");
+        auto result = documents::readDocxContent(partsWithBody(table));
+        QVERIFY2(result.has_value(), "a one-row table must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{1});
+
+        const auto *tbl = std::get_if<documents::Table>(&result->blocks.at(0).content);
+        QVERIFY2(tbl != nullptr, "the block is a table");
+        QCOMPARE(tbl->gridColumns, 2);
+        QCOMPARE(tbl->rows.size(), qsizetype{1});
+        const auto &cells = tbl->rows.at(0).cells;
+        QCOMPARE(cells.size(), qsizetype{2});
+        const QStringList expected = {QStringLiteral("Ячейка А"), QStringLiteral("Ячейка Б")};
+        for (qsizetype i = 0; i < cells.size(); ++i) {
+            const auto &cell = cells.at(i);
+            QCOMPARE(cell.startColumn, static_cast<int>(i));
+            QCOMPARE(cell.columnSpan, 1);
+            QCOMPARE(cell.rowSpan, 1);
+            QCOMPARE(cell.blocks.size(), qsizetype{1});
+            const auto *paragraph = std::get_if<documents::Paragraph>(&cell.blocks.at(0).content);
+            QVERIFY2(paragraph != nullptr, "a cell holds paragraphs in this body");
+            QCOMPARE(paragraph->text, expected.at(i));
+        }
+    }
+
+    void cellTextCountsTowardTextLimit() {
+        // One paragraph of kMaxTextChars characters inside a cell: accepted (the limit is inclusive).
+        const QString chunk(200000, QChar(u'я'));
+        auto accepted = documents::readDocxContent(partsWithBody(oneCellTable(paragraphXml(chunk))));
+        QVERIFY2(accepted.has_value(), "exactly kMaxTextChars in a cell must be accepted");
+
+        // One character more in the cell: refused, the cell text is part of the same total.
+        const QString over = chunk + QChar(u'я');
+        auto refused = documents::readDocxContent(partsWithBody(oneCellTable(paragraphXml(over))));
+        QVERIFY2(!refused.has_value(), "one character over kMaxTextChars in a cell must be refused");
+        QCOMPARE(refused.error(), documents::DocxError::Limit);
     }
 };
 

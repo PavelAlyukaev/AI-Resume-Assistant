@@ -40,6 +40,12 @@ constexpr QStringView kValue = u"val";
 constexpr QStringView kBullet = u"bullet";
 constexpr QStringView kDecimal = u"decimal";
 constexpr QStringView kDecimalLvlText = u"%1.";
+constexpr QStringView kTable = u"tbl";
+constexpr QStringView kTableGrid = u"tblGrid";
+constexpr QStringView kGridColumn = u"gridCol";
+constexpr QStringView kRow = u"tr";
+constexpr QStringView kCell = u"tc";
+constexpr QStringView kCellProperties = u"tcPr";
 
 // Encodings the OPC rule allows (OQ3, A10): UTF-8 and UTF-16 in any letter case. A document with
 // no declaration is also accepted; any other declared encoding is refused.
@@ -658,6 +664,132 @@ void applyList(Paragraph &paragraph, const ParagraphProps &props, const StyleTab
     }
 }
 
+// Everything one readDocxContent call keeps while it walks the body: the reader, the style and
+// numbering tables, the list counters, the budgets and the warnings in document order.
+struct ReadState {
+    PartReader &reader;
+    const StyleTable &styles;
+    const NumberingTable &numbering;
+    ListState lists;
+    ParseBudget budget;
+    QList<DocxWarning> warnings;
+};
+
+// Counts one model node (OQ9, T-02-02). False when the count passes kMaxModelNodes; the caller
+// then refuses the document before the node is kept.
+bool countNode(ReadState &st) { return ++st.budget.nodes <= documents::kMaxModelNodes; }
+
+std::expected<void, DocxError> readBlockChild(ReadState &st, QList<Block> &blocks);
+
+// Calls readBlockChild for each child of the current element up to its end tag.
+std::expected<void, DocxError> readBlocks(ReadState &st, QList<Block> &blocks) {
+    return forEachChild(st.reader, [&st, &blocks](PartReader &) { return readBlockChild(st, blocks); });
+}
+
+// Number of w:gridCol children of w:tblGrid, read right after its StartElement.
+std::expected<int, DocxError> readGridColumns(PartReader &reader) {
+    int columns = 0;
+    auto children = forEachChild(reader, [&columns](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kGridColumn))
+            ++columns;
+        return skipElement(child);
+    });
+    if (!children)
+        return std::unexpected(children.error());
+    return columns;
+}
+
+// Reads one w:tc right after its StartElement into row. Its blocks are read in document order; the
+// cell starts at the row cursor, which moves past it by one column for now (gridSpan comes later).
+std::expected<void, DocxError> readCell(ReadState &st, QList<TableCell> &cells, int &cursor) {
+    if (!countNode(st))
+        return std::unexpected(DocxError::Limit);
+    TableCell cell;
+    cell.startColumn = cursor;
+    cell.columnSpan = 1;
+    cell.rowSpan = 1;
+    cursor += cell.columnSpan;
+    auto children = forEachChild(st.reader, [&st, &cell](PartReader &) -> std::expected<void, DocxError> {
+        if (isWml(st.reader.xml(), kCellProperties))
+            return skipElement(st.reader);
+        return readBlockChild(st, cell.blocks);
+    });
+    if (!children)
+        return std::unexpected(children.error());
+    cells.append(std::move(cell));
+    return {};
+}
+
+// Reads one w:tr right after its StartElement and appends it to rows.
+std::expected<void, DocxError> readRow(ReadState &st, QList<TableRow> &rows) {
+    if (!countNode(st))
+        return std::unexpected(DocxError::Limit);
+    TableRow row;
+    int cursor = 0;
+    auto children =
+        forEachChild(st.reader, [&st, &row, &cursor](PartReader &) -> std::expected<void, DocxError> {
+            if (isWml(st.reader.xml(), kCell))
+                return readCell(st, row.cells, cursor);
+            return skipElement(st.reader);
+        });
+    if (!children)
+        return std::unexpected(children.error());
+    rows.append(std::move(row));
+    return {};
+}
+
+// Reads one w:tbl right after its StartElement. Only w:tblGrid and w:tr are read here; the grid
+// width is the number of w:gridCol, or the widest row when there is no grid.
+std::expected<Table, DocxError> readTable(ReadState &st) {
+    if (!countNode(st))
+        return std::unexpected(DocxError::Limit);
+    Table table;
+    std::optional<int> gridColumns;
+    auto children =
+        forEachChild(st.reader, [&st, &table, &gridColumns](PartReader &) -> std::expected<void, DocxError> {
+            if (isWml(st.reader.xml(), kTableGrid)) {
+                auto columns = readGridColumns(st.reader);
+                if (!columns)
+                    return std::unexpected(columns.error());
+                gridColumns = *columns;
+                return {};
+            }
+            if (isWml(st.reader.xml(), kRow))
+                return readRow(st, table.rows);
+            return skipElement(st.reader);
+        });
+    if (!children)
+        return std::unexpected(children.error());
+    table.gridColumns = gridColumns.value_or(0);
+    return table;
+}
+
+// One block child of the current element (w:body, w:tc or another block container), read whole:
+// a paragraph or a table becomes a block; any other element is skipped for now.
+std::expected<void, DocxError> readBlockChild(ReadState &st, QList<Block> &blocks) {
+    if (isWml(st.reader.xml(), kParagraph)) {
+        // The node is counted before it is read, so a flood of empty paragraphs stops at the limit.
+        if (!countNode(st))
+            return std::unexpected(DocxError::Limit);
+        ParagraphProps props;
+        auto paragraph = readParagraph(st.reader, st.budget, props);
+        if (!paragraph)
+            return std::unexpected(paragraph.error());
+        paragraph->headingLevel = headingLevel(props, st.styles);
+        applyList(*paragraph, props, st.styles, st.numbering, st.lists, st.warnings);
+        blocks.append(Block{std::move(*paragraph)});
+        return {};
+    }
+    if (isWml(st.reader.xml(), kTable)) {
+        auto table = readTable(st);
+        if (!table)
+            return std::unexpected(table.error());
+        blocks.append(Block{std::move(*table)});
+        return {};
+    }
+    return skipElement(st.reader);
+}
+
 } // namespace
 
 std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
@@ -686,45 +818,13 @@ std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
         bodyFound = *token == QXmlStreamReader::StartElement && isWml(reader.xml(), kBody);
     }
 
+    // Children of w:body up to its end tag; the end of w:body is the end of the walk.
+    ReadState st{reader, *styles, *numbering, {}, {}, parts.warnings};
     DocxDocument document;
-    document.warnings = parts.warnings;
-    ParseBudget budget;
-    ListState lists;
-
-    // Direct children of w:body. Each child is consumed whole, so an EndElement seen here
-    // at this level is the end of w:body.
-    while (true) {
-        auto token = reader.next();
-        if (!token)
-            return std::unexpected(token.error());
-        switch (*token) {
-        case QXmlStreamReader::StartElement:
-            if (isWml(reader.xml(), kParagraph)) {
-                // The node is counted before it is read, so a flood of empty paragraphs stops at the limit.
-                if (++budget.nodes > documents::kMaxModelNodes)
-                    return std::unexpected(DocxError::Limit);
-                ParagraphProps props;
-                auto paragraph = readParagraph(reader, budget, props);
-                if (!paragraph)
-                    return std::unexpected(paragraph.error());
-                paragraph->headingLevel = headingLevel(props, *styles);
-                applyList(*paragraph, props, *styles, *numbering, lists, document.warnings);
-                document.blocks.append(Block{std::move(*paragraph)});
-            } else {
-                // Other body children (tables, drawings, fields) are not read in this plan (02-03).
-                auto skipped = skipElement(reader);
-                if (!skipped)
-                    return std::unexpected(skipped.error());
-            }
-            break;
-        case QXmlStreamReader::EndElement:
-            return document;
-        case QXmlStreamReader::EndDocument:
-            return std::unexpected(DocxError::Corrupt);
-        default:
-            break;
-        }
-    }
+    if (auto body = readBlocks(st, document.blocks); !body)
+        return std::unexpected(body.error());
+    document.warnings = std::move(st.warnings);
+    return document;
 }
 
 } // namespace documents
