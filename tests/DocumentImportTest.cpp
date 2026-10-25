@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest>
@@ -91,6 +92,71 @@ QStringList snapshotTree(const QString &root) {
     }
     lines.sort();
     return lines;
+}
+
+// One archive per DocxWarning code, and the exact text readDocxFile gives for it. The texts are copied
+// from warningText in src/application/DocumentImport.cpp, with the file name «Резюме.docx». Each archive
+// gives exactly one warning. The texts are owner-pending (OQ8): this table checks them, it does not
+// change them.
+struct WarningCase {
+    QString code;
+    QByteArray archive;
+    QString expected;
+};
+
+// The word/document.xml part with bodyXml, as one zip entry.
+ZipEntry documentEntry(const QByteArray &bodyXml) {
+    return ZipEntry{"word/document.xml", documentRoot(bodyXml)};
+}
+
+QList<WarningCase> warningCases() {
+    const ZipEntry emptyStyles{"word/styles.xml", wmlElement("styles", {})};
+    const ZipEntry emptyNumbering{"word/numbering.xml", wmlElement("numbering", {})};
+
+    // A paragraph numbered with numId 1, whose level 0 is lowerLetter: shown approximately.
+    const ZipEntry lowerLetterNumbering{
+        "word/numbering.xml",
+        wmlElement("numbering",
+                   "<w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/>"
+                   "<w:numFmt w:val=\"lowerLetter\"/><w:lvlText w:val=\"%1)\"/></w:lvl></w:abstractNum>"
+                   "<w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num>")};
+    const QByteArray numberedBody = "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/>"
+                                    "</w:numPr></w:pPr><w:r><w:t>Пункт</w:t></w:r></w:p>";
+
+    return {
+        {QStringLiteral("StylesPartMissing"), buildStoredZip({documentEntry({}), emptyNumbering}),
+         QStringLiteral(
+             "В файле «Резюме.docx» нет описания стилей: заголовки могут отображаться как обычный текст.")},
+        {QStringLiteral("NumberingPartMissing"), buildStoredZip({documentEntry({}), emptyStyles}),
+         QStringLiteral("В файле «Резюме.docx» нет описания нумерации: списки могут отображаться без "
+                        "маркеров и номеров.")},
+        {QStringLiteral("ListFormatApproximated"),
+         buildStoredZip({documentEntry(numberedBody), emptyStyles, lowerLetterNumbering}),
+         QStringLiteral(
+             "В файле «Резюме.docx» есть список с нумерацией, которую приложение показывает упрощённо: "
+             "номера показаны в виде «1.», «2.».")},
+        {QStringLiteral("ImageSkipped"),
+         buildStoredZip({documentEntry("<w:p><w:r><w:t>до</w:t></w:r><w:r><w:drawing/></w:r>"
+                                       "<w:r><w:t>после</w:t></w:r></w:p>"),
+                         emptyStyles, emptyNumbering}),
+         QStringLiteral("В файле «Резюме.docx» есть рисунок или встроенный объект: он не показан, текст "
+                        "вокруг сохранён.")},
+        {QStringLiteral("TextBoxSkipped"),
+         buildStoredZip({documentEntry("<w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r>"
+                                       "<w:t>Поле</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape>"
+                                       "</w:pict></w:r></w:p>"),
+                         emptyStyles, emptyNumbering}),
+         QStringLiteral("В файле «Резюме.docx» есть текстовое поле: его содержимое не показано.")},
+        {QStringLiteral("OtherSkipped"),
+         buildStoredZip({documentEntry("<w:p><w:r><w:footnoteReference w:id=\"1\"/></w:r></w:p>"),
+                         emptyStyles, emptyNumbering}),
+         QStringLiteral(
+             "В файле «Резюме.docx» есть элемент, который приложение не разбирает: его текст не показан.")},
+        {QStringLiteral("HeaderFooterSkipped"),
+         buildStoredZip({documentEntry({}), emptyStyles, emptyNumbering,
+                         ZipEntry{"word/header1.xml", wmlElement("hdr", {})}}),
+         QStringLiteral("В файле «Резюме.docx» есть колонтитул: его текст не показан.")},
+    };
 }
 
 } // namespace
@@ -792,34 +858,51 @@ class DocumentImportTest : public QObject {
         QCOMPARE(only->text, QStringLiteral("Портфолио: github.com/ivanov вставка"));
     }
 
-    void warningTextsArePairwiseDistinct() {
-        // Literal copies of the texts in DocumentImport.cpp (warningText), with one file name.
-        // The test does not call the implementation, so a drift in either place is caught.
-        const QString name = QStringLiteral("Файл.docx");
-        const QStringList texts = {
-            QStringLiteral(
-                "В файле «%1» нет описания стилей: заголовки могут отображаться как обычный текст.")
-                .arg(name),
-            QStringLiteral(
-                "В файле «%1» нет описания нумерации: списки могут отображаться без маркеров и номеров.")
-                .arg(name),
-            QStringLiteral(
-                "В файле «%1» есть список с нумерацией, которую приложение показывает упрощённо: номера "
-                "показаны в виде «1.», «2.».")
-                .arg(name),
-            QStringLiteral(
-                "В файле «%1» есть рисунок или встроенный объект: он не показан, текст вокруг сохранён.")
-                .arg(name),
-            QStringLiteral("В файле «%1» есть текстовое поле: его содержимое не показано.").arg(name),
-            QStringLiteral(
-                "В файле «%1» есть элемент, который приложение не разбирает: его текст не показан.")
-                .arg(name),
-            QStringLiteral("В файле «%1» есть колонтитул: его текст не показан.").arg(name),
-        };
-        QCOMPARE(texts.size(), qsizetype{7});
-        for (qsizetype i = 0; i < texts.size(); ++i)
-            for (qsizetype j = i + 1; j < texts.size(); ++j)
-                QVERIFY2(texts.at(i) != texts.at(j), "two warning codes share one text");
+    void warningTextsMatchEachCode_data() {
+        QTest::addColumn<QString>("code");
+        QTest::addColumn<QByteArray>("archive");
+        QTest::addColumn<QString>("expected");
+        for (const WarningCase &warningCase : warningCases())
+            QTest::newRow(qPrintable(warningCase.code))
+                << warningCase.code << warningCase.archive << warningCase.expected;
+    }
+
+    void warningTextsMatchEachCode() {
+        QFETCH(QString, code);
+        QFETCH(QByteArray, archive);
+        QFETCH(QString, expected);
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+        const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
+        QVERIFY(writeBytes(path, archive));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(result.has_value(), qPrintable(code));
+        // Exactly one warning, and its text is the text the implementation gives for this code.
+        QCOMPARE(result->warnings, QStringList{expected});
+    }
+
+    void warningTextsOfRealRunsArePairwiseDistinct() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+        const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
+
+        // The texts are taken from the results of readDocxFile, not from copies in this file.
+        const QList<WarningCase> cases = warningCases();
+        QSet<QString> seen;
+        for (const WarningCase &warningCase : cases) {
+            QVERIFY(writeBytes(path, warningCase.archive));
+            auto result = DocumentImport::readDocxFile(path);
+            QVERIFY2(result.has_value(), qPrintable(warningCase.code));
+            QCOMPARE(result->warnings.size(), qsizetype{1});
+            seen.insert(result->warnings.first());
+        }
+        QCOMPARE(cases.size(), qsizetype{7});
+        QCOMPARE(seen.size(), qsizetype{7});
     }
 
     void messagesAndLogsCarryNoMarker() {
