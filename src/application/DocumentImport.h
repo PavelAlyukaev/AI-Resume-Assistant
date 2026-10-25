@@ -1,5 +1,6 @@
 #pragma once
 
+#include "documents/DocxModel.h"
 #include <QByteArray>
 #include <QString>
 #include <QStringList>
@@ -7,9 +8,12 @@
 
 namespace DocumentImport {
 
-// The three DOCX parts read from one file. warnings holds one Russian text per missing
-// optional part (D-08, D-09); its size is the count of such parts.
+// The result of one import. document is the parsed body model (plan 02-04). documentXml,
+// stylesXml and numberingXml are the raw parts, kept until phase 3 (OQ6). warnings holds the
+// Russian texts of all warnings, missing parts included, in the order of document.warnings;
+// its size is the count of such items (D-08, D-09).
 struct ImportedDocx {
+    documents::DocxDocument document;
     QByteArray documentXml;
     QByteArray stylesXml;
     QByteArray numberingXml;

@@ -12,7 +12,8 @@ struct DocxParts {
     QByteArray documentXml;
     QByteArray stylesXml;
     QByteArray numberingXml;
-    // One entry per missing optional part (D-08, D-09); the size is the count.
+    // One entry per missing optional part, per header or footer part, and for word/comments.xml
+    // (D-08, D-09, OQ2, OQ10). The size is the count of those parts; no content is read for them.
     QList<DocxWarning> warnings;
 };
 
