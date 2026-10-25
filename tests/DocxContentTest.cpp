@@ -1166,6 +1166,63 @@ class DocxContentTest : public QObject {
         QVERIFY2(result->warnings.isEmpty(), "the fallback branch is not read and gives no warning");
     }
 
+    void altChunkAndSubDocCountedAsOtherSkipped_data() {
+        QTest::addColumn<QByteArray>("body");
+        QTest::addColumn<QStringList>("texts");
+        QTest::addColumn<int>("otherSkipped");
+
+        // The w14 namespace is declared on mc:AlternateContent: wrapBody does not declare it.
+        const QByteArray w14Declaration =
+            "xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"";
+        const QByteArray contentPart = "<mc:AlternateContent " + w14Declaration +
+                                       "><mc:Choice Requires=\"w14\"><w14:contentPart r:id=\"rId5\"/>"
+                                       "</mc:Choice></mc:AlternateContent>";
+
+        QTest::newRow("A: altChunk at body level")
+            << QByteArray("<w:p><w:r><w:t>до</w:t></w:r></w:p><w:altChunk r:id=\"rId20\"/>"
+                          "<w:p><w:r><w:t>после</w:t></w:r></w:p>")
+            << QStringList{QStringLiteral("до"), QStringLiteral("после")} << 1;
+        QTest::newRow("B: altChunk between two runs of a paragraph")
+            << QByteArray("<w:p><w:r><w:t>до</w:t></w:r><w:altChunk r:id=\"rId20\"/>"
+                          "<w:r><w:t>после</w:t></w:r></w:p>")
+            << QStringList{QStringLiteral("допосле")} << 1;
+        QTest::newRow("C: subDoc between two runs of a paragraph")
+            << QByteArray("<w:p><w:r><w:t>до</w:t></w:r><w:subDoc r:id=\"rId21\"/>"
+                          "<w:r><w:t>после</w:t></w:r></w:p>")
+            << QStringList{QStringLiteral("допосле")} << 1;
+        QTest::newRow("D: altChunk in a table cell")
+            << QByteArray("<w:tbl><w:tblGrid><w:gridCol w:w=\"2000\"/></w:tblGrid><w:tr><w:tc>"
+                          "<w:altChunk r:id=\"rId20\"/><w:p><w:r><w:t>ячейка</w:t></w:r></w:p>"
+                          "</w:tc></w:tr></w:tbl>")
+            << QStringList{QStringLiteral("ячейка")} << 1;
+        QTest::newRow("E: subDoc in a paragraph and altChunk at body level")
+            << QByteArray("<w:p><w:r><w:t>начало</w:t></w:r><w:subDoc r:id=\"rId21\"/></w:p>"
+                          "<w:altChunk r:id=\"rId20\"/><w:p><w:r><w:t>конец</w:t></w:r></w:p>")
+            << QStringList{QStringLiteral("начало"), QStringLiteral("конец")} << 2;
+        QTest::newRow("F: contentPart inside a run (hidden subtree)")
+            << QByteArray("<w:p><w:r><w:t>до</w:t></w:r><w:r>") + contentPart +
+                   QByteArray("</w:r><w:r><w:t>после</w:t></w:r></w:p>")
+            << QStringList{QStringLiteral("допосле")} << 1;
+        QTest::newRow("G: contentPart directly in a paragraph")
+            << QByteArray("<w:p><w:r><w:t>до</w:t></w:r>") + contentPart +
+                   QByteArray("<w:r><w:t>после</w:t></w:r></w:p>")
+            << QStringList{QStringLiteral("допосле")} << 1;
+    }
+
+    void altChunkAndSubDocCountedAsOtherSkipped() {
+        QFETCH(QByteArray, body);
+        QFETCH(QStringList, texts);
+        QFETCH(int, otherSkipped);
+        auto result = documents::readDocxContent(partsWithBody(body));
+        QVERIFY2(result.has_value(), "a reference to another part must not refuse the document");
+        QStringList actual;
+        collectTexts(result->blocks, actual);
+        QCOMPARE(actual, texts);
+        QVERIFY2(result->warnings ==
+                     QList<documents::DocxWarning>(otherSkipped, documents::DocxWarning::OtherSkipped),
+                 "one OtherSkipped for each altChunk, subDoc or w14:contentPart, and nothing else");
+    }
+
     void inlineNestingBoundedForEveryWrapper_data() {
         QTest::addColumn<QByteArray>("opening");
         QTest::addColumn<QByteArray>("closing");
