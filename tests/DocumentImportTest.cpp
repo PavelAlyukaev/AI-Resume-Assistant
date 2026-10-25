@@ -41,6 +41,29 @@ QByteArray wordDocument(const QByteArray &bodyXml = {}) {
     return wmlElement("document", "<w:body>" + bodyXml + "</w:body>");
 }
 
+// Every message Qt delivers while a guard is alive is kept here for the test to inspect.
+QStringList &capturedMessages() {
+    static QStringList messages;
+    return messages;
+}
+
+void captureMessage(QtMsgType, const QMessageLogContext &, const QString &message) {
+    capturedMessages().append(message);
+}
+
+// Installs captureMessage and restores the previous handler when it goes out of scope, also on an
+// early return from a failed QVERIFY.
+class MessageCaptureGuard {
+  public:
+    MessageCaptureGuard() : previous_(qInstallMessageHandler(captureMessage)) { capturedMessages().clear(); }
+    ~MessageCaptureGuard() { qInstallMessageHandler(previous_); }
+    MessageCaptureGuard(const MessageCaptureGuard &) = delete;
+    MessageCaptureGuard &operator=(const MessageCaptureGuard &) = delete;
+
+  private:
+    QtMessageHandler previous_;
+};
+
 // Sorted listing of every entry under root: relative path, kind, size and last-modified time.
 // Two listings that are equal prove that nothing was created, removed, resized or touched.
 QStringList snapshotTree(const QString &root) {
@@ -491,6 +514,160 @@ class DocumentImportTest : public QObject {
         QVERIFY(!result.error().contains(root.path()));
         QVERIFY(!result.error().contains(dir));
         QVERIFY(!result.error().contains(cyrillicSubdirName()));
+    }
+
+    void headerAndFooterPartsCountedAsWarnings() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // Three parts count: header1, footer1 and footer2. The other names must not count: headerNotes
+        // (no digits), WORD/header3 (other case) and commentsExtended (not the exact comments name).
+        const QString name = QStringLiteral("Резюме.docx");
+        const QString path = QDir(dir).filePath(name);
+        QVERIFY(writeBytes(
+            path,
+            buildStoredZip({
+                ZipEntry{"[Content_Types].xml", "<Types/>"},
+                ZipEntry{"word/document.xml",
+                         wordDocument(QStringLiteral("<w:p><w:r><w:t>Текст</w:t></w:r></w:p>").toUtf8())},
+                ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+                ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
+                ZipEntry{"word/header1.xml", wmlElement("hdr", {})},
+                ZipEntry{"word/footer1.xml", wmlElement("ftr", {})},
+                ZipEntry{"word/footer2.xml", wmlElement("ftr", {})},
+                ZipEntry{"word/headerNotes.xml", wmlElement("hdr", {})},
+                ZipEntry{"WORD/header3.xml", wmlElement("hdr", {})},
+                ZipEntry{"word/commentsExtended.xml", wmlElement("commentsEx", {})},
+            })));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(result.has_value(), "a DOCX with header and footer parts must import");
+        const QString headerText =
+            QStringLiteral("В файле «Резюме.docx» есть колонтитул: его текст не показан.");
+        QCOMPARE(result->warnings.size(), qsizetype{3});
+        for (const QString &warning : result->warnings)
+            QCOMPARE(warning, headerText);
+    }
+
+    void overTextLimitGivesLimitText() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // One paragraph of kMaxTextChars + 1 Cyrillic letters: one unit over the text limit (D-03).
+        const QString longText(static_cast<qsizetype>(documents::kMaxTextChars + 1), QChar(0x044F));
+        const QByteArray body = QByteArrayLiteral("<w:p><w:r><w:t>") + longText.toUtf8() +
+                                QByteArrayLiteral("</w:t></w:r></w:p>");
+        const QString name = QStringLiteral("Резюме.docx");
+        const QString path = QDir(dir).filePath(name);
+        QVERIFY(writeBytes(path, buildStoredZip({ZipEntry{"word/document.xml", wordDocument(body)}})));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(!result.has_value(), "text above kMaxTextChars must be refused");
+        QCOMPARE(
+            result.error(),
+            QStringLiteral("Файл «Резюме.docx» отклонён: после распаковки содержимое слишком большое или "
+                           "состоит из слишком многих частей. Сохраните резюме заново в Word и повторите."));
+    }
+
+    void warningTextsArePairwiseDistinct() {
+        // Literal copies of the texts in DocumentImport.cpp (warningText), with one file name.
+        // The test does not call the implementation, so a drift in either place is caught.
+        const QString name = QStringLiteral("Файл.docx");
+        const QStringList texts = {
+            QStringLiteral(
+                "В файле «%1» нет описания стилей: заголовки могут отображаться как обычный текст.")
+                .arg(name),
+            QStringLiteral(
+                "В файле «%1» нет описания нумерации: списки могут отображаться без маркеров и номеров.")
+                .arg(name),
+            QStringLiteral(
+                "В файле «%1» есть список с нумерацией, которую приложение показывает упрощённо: номера "
+                "показаны в виде «1.», «2.».")
+                .arg(name),
+            QStringLiteral(
+                "В файле «%1» есть рисунок или встроенный объект: он не показан, текст вокруг сохранён.")
+                .arg(name),
+            QStringLiteral("В файле «%1» есть текстовое поле: его содержимое не показано.").arg(name),
+            QStringLiteral(
+                "В файле «%1» есть элемент, который приложение не разбирает: его текст не показан.")
+                .arg(name),
+            QStringLiteral("В файле «%1» есть колонтитул: его текст не показан.").arg(name),
+        };
+        QCOMPARE(texts.size(), qsizetype{7});
+        for (qsizetype i = 0; i < texts.size(); ++i)
+            for (qsizetype j = i + 1; j < texts.size(); ++j)
+                QVERIFY2(texts.at(i) != texts.at(j), "two warning codes share one text");
+    }
+
+    void messagesAndLogsCarryNoMarker() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // ASCII marker, so it is found in the raw bytes whatever the file's encoding is.
+        const QByteArray marker = QByteArrayLiteral("MARKER-SAFE05");
+        const QByteArray xmlDeclaration = QByteArrayLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        const QByteArray plainDocument =
+            wordDocument(QByteArrayLiteral("<w:p><w:r><w:t>MARKER-SAFE05</w:t></w:r></w:p>"));
+
+        struct Input {
+            QString name;
+            QByteArray bytes;
+        };
+        const QList<Input> inputs = {
+            // 1. DOCTYPE with an internal entity whose value is the marker.
+            {QStringLiteral("Сущность.docx"),
+             buildStoredZip({ZipEntry{
+                 "word/document.xml",
+                 xmlDeclaration + QByteArrayLiteral("<!DOCTYPE w:document [<!ENTITY e \"MARKER-SAFE05\">]>") +
+                     wmlElement("document", "<w:body><w:p><w:r><w:t>&e;</w:t></w:r></w:p></w:body>")}})},
+            // 2. An undeclared entity next to the marker in text.
+            {QStringLiteral("Неизвестная.docx"),
+             buildStoredZip({ZipEntry{"word/document.xml",
+                                      wordDocument(QByteArrayLiteral(
+                                          "<w:p><w:r><w:t>MARKER-SAFE05 &undeclared;</w:t></w:r></w:p>"))}})},
+            // 3. XML cut off right after the marker.
+            {QStringLiteral("Обрезанный.docx"),
+             buildStoredZip(
+                 {ZipEntry{"word/document.xml",
+                           QByteArrayLiteral("<w:document xmlns:w=\"http://schemas.openxmlformats.org/"
+                                             "wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>"
+                                             "MARKER-SAFE05")}})},
+            // 4. A declared encoding that is not supported, with the marker in the text.
+            {QStringLiteral("Кодировка.docx"),
+             buildStoredZip({ZipEntry{"word/document.xml",
+                                      QByteArrayLiteral("<?xml version=\"1.0\" encoding=\"windows-1251\"?>") +
+                                          plainDocument}})},
+            // 5. DOCTYPE in word/styles.xml; the body is valid and carries the marker as well.
+            {QStringLiteral("Стили.docx"),
+             buildStoredZip({
+                 ZipEntry{"word/document.xml", plainDocument},
+                 ZipEntry{"word/styles.xml",
+                          xmlDeclaration +
+                              QByteArrayLiteral("<!DOCTYPE w:styles [<!ENTITY e \"MARKER-SAFE05\">]>") +
+                              wmlElement("styles", "&e;")},
+             })},
+        };
+
+        MessageCaptureGuard guard;
+        for (const Input &input : inputs) {
+            const QString path = QDir(dir).filePath(input.name);
+            QVERIFY(writeBytes(path, input.bytes));
+            capturedMessages().clear();
+
+            auto result = DocumentImport::readDocxFile(path);
+            QVERIFY2(!result.has_value(), "every planted input must be refused");
+            QVERIFY2(!result.error().contains(QString::fromUtf8(marker)),
+                     "an error text must not carry document content");
+            for (const QString &message : capturedMessages())
+                QVERIFY2(!message.contains(QString::fromUtf8(marker)),
+                         "a logged message must not carry document content");
+        }
     }
 
     void messagesLeakNeitherPathNorContent() {
