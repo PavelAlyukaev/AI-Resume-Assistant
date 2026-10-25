@@ -71,7 +71,8 @@ class DocumentImportTest : public QObject {
         const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
         QVERIFY(QDir().mkpath(dir));
 
-        const QByteArray document = wordDocument(QStringLiteral("<w:p><w:r><w:t>Тело резюме</w:t></w:r></w:p>").toUtf8());
+        const QByteArray document =
+            wordDocument(QStringLiteral("<w:p><w:r><w:t>Тело резюме</w:t></w:r></w:p>").toUtf8());
         const QByteArray styles = wmlElement("styles", QStringLiteral("Стили").toUtf8());
         const QByteArray numbering = wmlElement("numbering", QStringLiteral("Нумерация").toUtf8());
         const QByteArray archive = buildStoredZip({
@@ -98,12 +99,12 @@ class DocumentImportTest : public QObject {
 
         // Heading1 has the name "heading 1": its level comes from the style (plan 02-02).
         const QByteArray styles = wmlElement(
-            "styles", "<w:style w:type=\"paragraph\" w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/></w:style>");
-        const QByteArray body =
-            QStringLiteral("<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
-                           "<w:r><w:t>Опыт работы</w:t></w:r></w:p>"
-                           "<w:p><w:r><w:t>Ёлкин Пётр, менеджер</w:t></w:r></w:p>")
-                .toUtf8();
+            "styles",
+            "<w:style w:type=\"paragraph\" w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/></w:style>");
+        const QByteArray body = QStringLiteral("<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
+                                               "<w:r><w:t>Опыт работы</w:t></w:r></w:p>"
+                                               "<w:p><w:r><w:t>Ёлкин Пётр, менеджер</w:t></w:r></w:p>")
+                                    .toUtf8();
         const QByteArray archive = buildStoredZip({
             ZipEntry{"[Content_Types].xml", "<Types/>"},
             ZipEntry{"word/document.xml", wordDocument(body)},
@@ -138,10 +139,11 @@ class DocumentImportTest : public QObject {
         // An internal entity whose value is the marker: the DOCTYPE is refused before any entity is
         // expanded, so the marker never reaches the result.
         const QByteArray document =
-            QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                           "<!DOCTYPE w:document [<!ENTITY ext \"MARKER-DT-4412\">]>"
-                           "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
-                           "<w:body><w:p><w:r><w:t>&ext;</w:t></w:r></w:p></w:body></w:document>")
+            QStringLiteral(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                "<!DOCTYPE w:document [<!ENTITY ext \"MARKER-DT-4412\">]>"
+                "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+                "<w:body><w:p><w:r><w:t>&ext;</w:t></w:r></w:p></w:body></w:document>")
                 .toUtf8();
         const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
         QVERIFY(writeBytes(path, buildStoredZip({ZipEntry{"word/document.xml", document}})));
@@ -149,9 +151,69 @@ class DocumentImportTest : public QObject {
         auto result = DocumentImport::readDocxFile(path);
         QVERIFY2(!result.has_value(), "a DOCTYPE in word/document.xml must not import");
         QCOMPARE(result.error(),
-                 QStringLiteral("Файл «Резюме.docx» содержит DTD или внешние сущности XML, поэтому не открыт из "
-                                "соображений безопасности. Сохраните резюме в Word как .docx заново и повторите."));
+                 QStringLiteral(
+                     "Файл «Резюме.docx» содержит DTD или внешние сущности XML, поэтому не открыт из "
+                     "соображений безопасности. Сохраните резюме в Word как .docx заново и повторите."));
         QVERIFY(!result.error().contains(QStringLiteral("MARKER-DT-4412")));
+    }
+
+    void headerFooterAndCommentsBytesNeverRead() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        const QByteArray headerMarker = QByteArrayLiteral("HDRMARK-A1");
+        const QByteArray footerMarker = QByteArrayLiteral("FTRMARK-B2");
+        const QByteArray commentsMarker = QByteArrayLiteral("CMTMARK-C3");
+        QByteArray archive = buildStoredZip({
+            ZipEntry{"[Content_Types].xml", "<Types/>"},
+            ZipEntry{"word/document.xml",
+                     wordDocument(QStringLiteral("<w:p><w:r><w:t>Тест</w:t></w:r></w:p>").toUtf8())},
+            ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+            ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
+            ZipEntry{"word/header1.xml", wmlElement("hdr", headerMarker)},
+            ZipEntry{"word/footer1.xml", wmlElement("ftr", footerMarker)},
+            ZipEntry{"word/comments.xml", wmlElement("comments", commentsMarker)},
+        });
+
+        // Damage each payload in place: the first byte of its marker changes and the central
+        // directory is untouched. The stored CRC then no longer matches the bytes.
+        for (const QByteArray &marker : {headerMarker, footerMarker, commentsMarker}) {
+            const qsizetype at = archive.indexOf(marker);
+            QVERIFY2(at >= 0, "the marker must be present in the archive bytes");
+            QVERIFY2(archive.indexOf(marker, at + 1) < 0, "the marker must occur exactly once");
+            archive[at] = 'X';
+        }
+
+        // The damage is real: the archive still opens, and a direct read of the header fails.
+        auto opened = documents::ZipArchive::open(archive);
+        QVERIFY2(opened.has_value(), "payload damage must not stop the archive from opening");
+        auto header = (*opened)->readEntry("word/header1.xml", documents::kMaxUnpackedBytes);
+        QVERIFY2(!header.has_value(), "a read of the damaged header must fail");
+        QVERIFY(header.error() == documents::DocxError::Corrupt);
+
+        // The import never reads those entries, so the damage gives warnings and no error.
+        const QString name = QStringLiteral("Резюме.docx");
+        const QString path = QDir(dir).filePath(name);
+        QVERIFY(writeBytes(path, archive));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(result.has_value(), "damaged header, footer and comments parts must not fail the import");
+        QCOMPARE(result->warnings.size(), qsizetype{3});
+        const QString headerText =
+            QStringLiteral("В файле «%1» есть колонтитул: его текст не показан.").arg(name);
+        QCOMPARE(result->warnings.at(0), headerText);
+        QCOMPARE(result->warnings.at(1), headerText);
+        QCOMPARE(result->warnings.at(2),
+                 QStringLiteral(
+                     "В файле «%1» есть элемент, который приложение не разбирает: его текст не показан.")
+                     .arg(name));
+        for (const QString &warning : result->warnings) {
+            QVERIFY(!warning.contains(QString::fromUtf8(headerMarker)));
+            QVERIFY(!warning.contains(QString::fromUtf8(footerMarker)));
+            QVERIFY(!warning.contains(QString::fromUtf8(commentsMarker)));
+        }
     }
 
     void notZipMessageNamesFileOnly() {
@@ -297,9 +359,7 @@ class DocumentImportTest : public QObject {
         // Only word/document.xml: both optional parts are missing, so two warnings in order.
         const QString textOnlyName = QStringLiteral("Только_текст.docx");
         const QString textOnlyPath = QDir(dir).filePath(textOnlyName);
-        QVERIFY(writeBytes(
-            textOnlyPath,
-            buildStoredZip({ZipEntry{"word/document.xml", wordDocument()}})));
+        QVERIFY(writeBytes(textOnlyPath, buildStoredZip({ZipEntry{"word/document.xml", wordDocument()}})));
         auto withWarnings = DocumentImport::readDocxFile(textOnlyPath);
         QVERIFY2(withWarnings.has_value(), "a DOCX without optional parts must still import");
         QCOMPARE(withWarnings->warnings.size(), qsizetype{2});
@@ -309,12 +369,11 @@ class DocumentImportTest : public QObject {
         // All three parts: no warning.
         const QString fullName = QStringLiteral("Полный.docx");
         const QString fullPath = QDir(dir).filePath(fullName);
-        QVERIFY(writeBytes(fullPath,
-                           buildStoredZip({
-                               ZipEntry{"word/document.xml", wordDocument()},
-                               ZipEntry{"word/styles.xml", wmlElement("styles", {})},
-                               ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
-                           })));
+        QVERIFY(writeBytes(fullPath, buildStoredZip({
+                                         ZipEntry{"word/document.xml", wordDocument()},
+                                         ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+                                         ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
+                                     })));
         auto complete = DocumentImport::readDocxFile(fullPath);
         QVERIFY2(complete.has_value(), "a complete DOCX must import");
         QVERIFY(complete->warnings.isEmpty());
@@ -369,12 +428,11 @@ class DocumentImportTest : public QObject {
         };
         const QByteArray garbage = QByteArray("PK\x03\x04", 4) + QByteArray(64, 'Z');
         const QList<Input> inputs = {
-            {QStringLiteral("Полный.docx"),
-             buildStoredZip({
-                 ZipEntry{"word/document.xml", wordDocument()},
-                 ZipEntry{"word/styles.xml", wmlElement("styles", {})},
-                 ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
-             })},
+            {QStringLiteral("Полный.docx"), buildStoredZip({
+                                                ZipEntry{"word/document.xml", wordDocument()},
+                                                ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+                                                ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
+                                            })},
             {QStringLiteral("Текст.docx"), QStringLiteral("Обычный текст").toUtf8()},
             {QStringLiteral("Мусор.docx"), garbage},
             {QStringLiteral("Шифр.docx"), buildCfb(true)},

@@ -96,6 +96,8 @@ QString warningText(documents::DocxWarning code, const QString &fileName) {
         return QStringLiteral(
                    "В файле «%1» есть элемент, который приложение не разбирает: его текст не показан.")
             .arg(fileName);
+    case documents::DocxWarning::HeaderFooterSkipped:
+        return QStringLiteral("В файле «%1» есть колонтитул: его текст не показан.").arg(fileName);
     }
     return {};
 }
