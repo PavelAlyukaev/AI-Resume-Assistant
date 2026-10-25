@@ -26,6 +26,9 @@ enum class DocxWarning {
     StylesPartMissing,
     NumberingPartMissing,
     ListFormatApproximated, // a list whose number format is shown as a plain "N." (OQ5); one per numId
+    ImageSkipped,           // a picture, drawing or embedded object whose content is not shown (DOCX-07)
+    TextBoxSkipped,         // a text box (txbxContent) whose content is not shown (SAFE-04)
+    OtherSkipped,           // a footnote or endnote reference, a symbol, or an unknown element with text
 };
 
 // Units: "MB" in D-01 and D-02 is read as MiB (1024 * 1024 bytes). Owner confirmation pending.
@@ -54,5 +57,10 @@ inline constexpr qint64 kMaxTextChars = 200000;
 // OQ9, T-02-02: limit on the number of model nodes (paragraphs, tables, rows, cells), enforced in
 // readDocxContent. A byte budget does not bound empty paragraphs, so the count is needed.
 inline constexpr qint64 kMaxModelNodes = 50000;
+
+// OQ7, A9: nesting depth limit, a planner value. Counted elements are w:tbl, w:sdt, w:customXml,
+// w:hyperlink, w:ins, w:moveTo, w:smartTag, w:fldSimple and the chosen mc:AlternateContent branch.
+// A deeper nesting gives DocxError::Limit (T-02-08).
+inline constexpr qint64 kMaxNestingDepth = 64;
 
 } // namespace documents

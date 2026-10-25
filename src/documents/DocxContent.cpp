@@ -3,6 +3,7 @@
 #include <QSet>
 #include <QStringView>
 #include <QXmlStreamReader>
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <expected>
@@ -40,6 +41,49 @@ constexpr QStringView kValue = u"val";
 constexpr QStringView kBullet = u"bullet";
 constexpr QStringView kDecimal = u"decimal";
 constexpr QStringView kDecimalLvlText = u"%1.";
+constexpr QStringView kTable = u"tbl";
+constexpr QStringView kTableGrid = u"tblGrid";
+constexpr QStringView kGridColumn = u"gridCol";
+constexpr QStringView kRow = u"tr";
+constexpr QStringView kCell = u"tc";
+constexpr QStringView kCellProperties = u"tcPr";
+constexpr QStringView kGridSpan = u"gridSpan";
+constexpr QStringView kVerticalMerge = u"vMerge";
+constexpr QStringView kRestart = u"restart";
+constexpr QStringView kRun = u"r";
+constexpr QStringView kTab = u"tab";
+constexpr QStringView kPtab = u"ptab";
+constexpr QStringView kBreak = u"br";
+constexpr QStringView kCarriageReturn = u"cr";
+constexpr QStringView kNoBreakHyphen = u"noBreakHyphen";
+constexpr QStringView kSoftHyphen = u"softHyphen";
+constexpr QStringView kSymbol = u"sym";
+constexpr QStringView kHyperlink = u"hyperlink";
+constexpr QStringView kInserted = u"ins";
+constexpr QStringView kMoveTo = u"moveTo";
+constexpr QStringView kSmartTag = u"smartTag";
+constexpr QStringView kSimpleField = u"fldSimple";
+constexpr QStringView kCustomXml = u"customXml";
+constexpr QStringView kSdt = u"sdt";
+constexpr QStringView kSdtProperties = u"sdtPr";
+constexpr QStringView kSdtContent = u"sdtContent";
+constexpr QStringView kShowingPlaceholder = u"showingPlcHdr";
+constexpr QStringView kDeleted = u"del";
+constexpr QStringView kMoveFrom = u"moveFrom";
+constexpr QStringView kDelText = u"delText";
+constexpr QStringView kInstrText = u"instrText";
+constexpr QStringView kDelInstrText = u"delInstrText";
+constexpr QStringView kDrawing = u"drawing";
+constexpr QStringView kPict = u"pict";
+constexpr QStringView kObject = u"object";
+constexpr QStringView kTextBoxContent = u"txbxContent"; // any namespace: w:txbxContent and wps:txbxContent
+constexpr QStringView kFootnoteReference = u"footnoteReference";
+constexpr QStringView kEndnoteReference = u"endnoteReference";
+constexpr QStringView kMarkupCompatibilityNamespace =
+    u"http://schemas.openxmlformats.org/markup-compatibility/2006";
+constexpr QStringView kAlternateContent = u"AlternateContent";
+constexpr QStringView kChoice = u"Choice";
+constexpr QStringView kFallback = u"Fallback";
 
 // Encodings the OPC rule allows (OQ3, A10): UTF-8 and UTF-16 in any letter case. A document with
 // no declaration is also accepted; any other declared encoding is refused.
@@ -86,6 +130,11 @@ class PartReader {
 
 bool isWml(const QXmlStreamReader &xml, QStringView localName) {
     return xml.namespaceUri() == kWmlNamespace && xml.name() == localName;
+}
+
+// The element is in the markup compatibility namespace (mc:AlternateContent, mc:Choice, mc:Fallback).
+bool isMc(const QXmlStreamReader &xml, QStringView localName) {
+    return xml.namespaceUri() == kMarkupCompatibilityNamespace && xml.name() == localName;
 }
 
 // Value of a WordprocessingML attribute of the current element (w:val, w:styleId, ...); empty when
@@ -515,56 +564,6 @@ struct ParseBudget {
     qint64 nodes = 0;     // model nodes created so far (OQ9, T-02-02)
 };
 
-// Reads one w:p up to its end tag. Text comes only from w:t; every other child is skipped whole,
-// except a w:pPr directly under w:p, whose properties go to props. Called right after the
-// StartElement of w:p. Text that would pass kMaxTextChars is refused before it is appended, so
-// no partial text escapes.
-std::expected<Paragraph, DocxError> readParagraph(PartReader &reader, ParseBudget &budget,
-                                                  ParagraphProps &props) {
-    Paragraph paragraph;
-    qint64 depth = 0;      // open elements inside w:p; 0 means the w:p itself is current
-    qint64 textDepth = -1; // depth of the open w:t, -1 when no w:t is open
-    while (true) {
-        auto token = reader.next();
-        if (!token)
-            return std::unexpected(token.error());
-        switch (*token) {
-        case QXmlStreamReader::StartElement:
-            if (depth == 0 && isWml(reader.xml(), kParagraphProperties)) {
-                // The properties are consumed whole; their children hold no text.
-                if (auto read = readParagraphProps(reader, props); !read)
-                    return std::unexpected(read.error());
-                break;
-            }
-            ++depth;
-            if (textDepth < 0 && isWml(reader.xml(), kText))
-                textDepth = depth;
-            break;
-        case QXmlStreamReader::EndElement:
-            if (depth == 0)
-                return paragraph;
-            if (depth == textDepth)
-                textDepth = -1;
-            --depth;
-            break;
-        case QXmlStreamReader::Characters:
-            if (textDepth >= 0) {
-                // Every character token is kept as is, whitespace and CDATA included (DOCX-06).
-                const QStringView chunk = reader.xml().text();
-                budget.textChars += chunk.size();
-                if (budget.textChars > documents::kMaxTextChars)
-                    return std::unexpected(DocxError::Limit);
-                paragraph.text.append(chunk);
-            }
-            break;
-        case QXmlStreamReader::EndDocument:
-            return std::unexpected(DocxError::Corrupt);
-        default:
-            break;
-        }
-    }
-}
-
 // The numbering reference of a paragraph: the numId and level from its own numPr, or else from the
 // numPr of its style chain (A13). fromStyle tells which of the two it is.
 struct NumRef {
@@ -658,6 +657,513 @@ void applyList(Paragraph &paragraph, const ParagraphProps &props, const StyleTab
     }
 }
 
+// Everything one readDocxContent call keeps while it walks the body: the reader, the style and
+// numbering tables, the list counters, the budgets and the warnings in document order.
+struct ReadState {
+    PartReader &reader;
+    const StyleTable &styles;
+    const NumberingTable &numbering;
+    ListState lists;
+    ParseBudget budget;
+    QList<DocxWarning> warnings;
+    qint64 depth = 0; // open counted elements (T-02-08)
+};
+
+// Enters one counted element: the depth goes up for the lifetime of the scope and comes back down on
+// every exit, including an early return. exceeded() tells whether the depth passed kMaxNestingDepth.
+class DepthScope {
+  public:
+    explicit DepthScope(ReadState &st) : m_depth(st.depth) { ++m_depth; }
+    ~DepthScope() { --m_depth; }
+    DepthScope(const DepthScope &) = delete;
+    DepthScope &operator=(const DepthScope &) = delete;
+
+    [[nodiscard]] bool exceeded() const { return m_depth > documents::kMaxNestingDepth; }
+
+  private:
+    qint64 &m_depth;
+};
+
+// Counts one model node (OQ9, T-02-02). False when the count passes kMaxModelNodes; the caller
+// then refuses the document before the node is kept.
+bool countNode(ReadState &st) { return ++st.budget.nodes <= documents::kMaxModelNodes; }
+
+std::expected<void, DocxError> readBlockChild(ReadState &st, QList<Block> &blocks);
+std::expected<void, DocxError> skipUnknown(ReadState &st);
+
+// Calls readBlockChild for each child of the current element up to its end tag.
+std::expected<void, DocxError> readBlocks(ReadState &st, QList<Block> &blocks) {
+    return forEachChild(st.reader, [&st, &blocks](PartReader &) { return readBlockChild(st, blocks); });
+}
+
+// Number of w:gridCol children of w:tblGrid, read right after its StartElement.
+std::expected<int, DocxError> readGridColumns(PartReader &reader) {
+    int columns = 0;
+    auto children = forEachChild(reader, [&columns](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kGridColumn))
+            ++columns;
+        return skipElement(child);
+    });
+    if (!children)
+        return std::unexpected(children.error());
+    return columns;
+}
+
+// Span of a w:gridSpan: a number of at least 1; a missing, non-numeric or smaller value gives 1. A
+// larger value is clamped to kMaxModelNodes, a width that no table can use (T-02-10).
+qint64 readSpan(const QString &text) {
+    bool ok = false;
+    const qint64 value = text.toLongLong(&ok);
+    if (!ok || value < 1)
+        return 1;
+    return std::min(value, documents::kMaxModelNodes);
+}
+
+// Kind of a w:vMerge: restart opens a group; continue, or w:vMerge without a value, continues the
+// group that starts above (ISO/IEC 29500-1, the default of w:val is continue).
+enum class VerticalMerge { None, Restart, Continue };
+
+// The w:tcPr values this plan reads: the column span and the vertical merge.
+struct CellProps {
+    qint64 span = 1;
+    VerticalMerge merge = VerticalMerge::None;
+};
+
+// Reads w:tcPr right after its StartElement. Other children are skipped whole, including
+// w:tcPrChange, which holds the earlier properties of the cell.
+std::expected<void, DocxError> readCellProps(PartReader &reader, CellProps &props) {
+    return forEachChild(reader, [&props](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kGridSpan)) {
+            props.span = readSpan(wmlAttribute(child.xml(), kValue));
+        } else if (isWml(child.xml(), kVerticalMerge)) {
+            const QString value = wmlAttribute(child.xml(), kValue);
+            props.merge = QStringView(value) == kRestart ? VerticalMerge::Restart : VerticalMerge::Continue;
+        }
+        return skipElement(child);
+    });
+}
+
+// A cell while its table is read. Columns stay 64-bit until the grid is known, because a row may
+// hold spans that the grid trims later.
+struct PendingCell {
+    qint64 start = 0;
+    qint64 span = 1;
+    int rowSpan = 1;
+    QList<Block> blocks;
+};
+
+// The cell that opened a vertical merge: its row and its index in that row.
+struct MergeStart {
+    qsizetype row = 0;
+    qsizetype cell = 0;
+};
+
+// A table while its rows are read: the cells of each row in order, the first column after the last
+// cell of each row, the open vertical merges by start column, and the grid of w:tblGrid if any.
+struct TableBuild {
+    QList<QList<PendingCell>> rows;
+    QList<qint64> rowEnds;
+    QHash<qint64, MergeStart> merges;
+    std::optional<qint64> gridColumns;
+};
+
+// Reads one w:tc right after its StartElement into row rowIndex. The cell starts at the row cursor and
+// moves the cursor past its span. A continuation of a vertical merge is not a cell: it adds one to the
+// rowSpan of the cell that opened the merge, and its content is not shown (DOCX-05, T-02-10).
+std::expected<void, DocxError> readCell(ReadState &st, TableBuild &table, qsizetype rowIndex) {
+    if (!countNode(st))
+        return std::unexpected(DocxError::Limit);
+    CellProps props;
+    QList<Block> blocks;
+    auto children =
+        forEachChild(st.reader, [&st, &props, &blocks](PartReader &) -> std::expected<void, DocxError> {
+            if (isWml(st.reader.xml(), kCellProperties))
+                return readCellProps(st.reader, props);
+            return readBlockChild(st, blocks);
+        });
+    if (!children)
+        return std::unexpected(children.error());
+
+    qint64 &cursor = table.rowEnds[rowIndex];
+    const qint64 start = cursor;
+    cursor += props.span;
+    if (props.merge == VerticalMerge::Continue) {
+        if (const auto open = table.merges.constFind(start); open != table.merges.constEnd()) {
+            table.rows[open->row][open->cell].rowSpan += 1;
+            return {};
+        }
+    }
+    // A cell that is not a continuation ends the merge of its column; a restart opens a new one.
+    table.merges.remove(start);
+    auto &row = table.rows[rowIndex];
+    row.append(PendingCell{start, props.span, 1, std::move(blocks)});
+    if (props.merge == VerticalMerge::Restart)
+        table.merges.insert(start, MergeStart{rowIndex, row.size() - 1});
+    return {};
+}
+
+// Children of a w:tr: its w:tc cells, and the cells inside a w:sdt, w:sdtContent or w:customXml wrapper.
+// Each wrapper is a counted element (T-02-08); its properties and anything else go to skipUnknown, so no
+// cell is lost without a count.
+std::expected<void, DocxError> readRowChildren(ReadState &st, TableBuild &table, qsizetype rowIndex) {
+    return forEachChild(st.reader, [&st, &table, rowIndex](PartReader &) -> std::expected<void, DocxError> {
+        const QXmlStreamReader &xml = st.reader.xml();
+        if (isWml(xml, kCell))
+            return readCell(st, table, rowIndex);
+        if (isWml(xml, kSdt) || isWml(xml, kSdtContent) || isWml(xml, kCustomXml)) {
+            DepthScope depth(st);
+            if (depth.exceeded())
+                return std::unexpected(DocxError::Limit);
+            return readRowChildren(st, table, rowIndex);
+        }
+        return skipUnknown(st);
+    });
+}
+
+// Reads one w:tr right after its StartElement: a new row of the table, filled by its w:tc elements.
+std::expected<void, DocxError> readRow(ReadState &st, TableBuild &table) {
+    if (!countNode(st))
+        return std::unexpected(DocxError::Limit);
+    table.rows.append(QList<PendingCell>{});
+    table.rowEnds.append(0);
+    const qsizetype rowIndex = table.rows.size() - 1;
+    return readRowChildren(st, table, rowIndex);
+}
+
+// Turns the built rows into the model (DOCX-05, T-02-10, OQ9). The grid is the number of w:gridCol;
+// without a grid it is the widest row, which must not pass kMaxModelNodes. Spans are trimmed to the
+// grid, a cell that starts beyond it is dropped, and each row is padded with empty cells up to the
+// grid. Every kept cell and every padding cell counts as a node.
+std::expected<Table, DocxError> finishTable(ReadState &st, TableBuild &build) {
+    qint64 grid = build.gridColumns.value_or(0);
+    if (grid == 0) {
+        for (const qint64 end : build.rowEnds)
+            grid = std::max(grid, end);
+        if (grid > documents::kMaxModelNodes)
+            return std::unexpected(DocxError::Limit);
+    }
+
+    Table table;
+    table.gridColumns = static_cast<int>(grid);
+    for (qsizetype r = 0; r < build.rows.size(); ++r) {
+        TableRow row;
+        for (PendingCell &pending : build.rows[r]) {
+            if (pending.start >= grid) {
+                // Beyond the grid nothing can be shown; a cell with content is counted, not lost (SAFE-04).
+                if (!pending.blocks.isEmpty())
+                    st.warnings.append(DocxWarning::OtherSkipped);
+                continue;
+            }
+            TableCell cell;
+            cell.startColumn = static_cast<int>(pending.start);
+            cell.columnSpan = static_cast<int>(std::min(pending.span, grid - pending.start));
+            cell.rowSpan = pending.rowSpan;
+            cell.blocks = std::move(pending.blocks);
+            row.cells.append(std::move(cell));
+        }
+        // Columns after the last cell of the row, up to the grid, are padding.
+        for (qint64 column = std::min(build.rowEnds.at(r), grid); column < grid; ++column) {
+            if (!countNode(st))
+                return std::unexpected(DocxError::Limit);
+            TableCell padding;
+            padding.startColumn = static_cast<int>(column);
+            row.cells.append(std::move(padding));
+        }
+        table.rows.append(std::move(row));
+    }
+    return table;
+}
+
+// Children of a w:tbl: w:tblGrid, its w:tr rows, and the rows inside a w:sdt, w:sdtContent or w:customXml
+// wrapper (each counted, T-02-08). Anything else, such as w:tblPr, goes to skipUnknown.
+std::expected<void, DocxError> readTableChildren(ReadState &st, TableBuild &build) {
+    return forEachChild(st.reader, [&st, &build](PartReader &) -> std::expected<void, DocxError> {
+        const QXmlStreamReader &xml = st.reader.xml();
+        if (isWml(xml, kTableGrid)) {
+            auto columns = readGridColumns(st.reader);
+            if (!columns)
+                return std::unexpected(columns.error());
+            build.gridColumns = *columns;
+            return {};
+        }
+        if (isWml(xml, kRow))
+            return readRow(st, build);
+        if (isWml(xml, kSdt) || isWml(xml, kSdtContent) || isWml(xml, kCustomXml)) {
+            DepthScope depth(st);
+            if (depth.exceeded())
+                return std::unexpected(DocxError::Limit);
+            return readTableChildren(st, build);
+        }
+        return skipUnknown(st);
+    });
+}
+
+// Reads one w:tbl right after its StartElement: a counted element (T-02-08). Its w:tblGrid gives the
+// grid, its w:tr elements are read by readRow, and the model is made by finishTable.
+std::expected<Table, DocxError> readTable(ReadState &st) {
+    DepthScope depth(st);
+    if (depth.exceeded() || !countNode(st))
+        return std::unexpected(DocxError::Limit);
+    TableBuild build;
+    if (auto children = readTableChildren(st, build); !children)
+        return std::unexpected(children.error());
+    return finishTable(st, build);
+}
+
+// Where the children of a container go: the runs of one paragraph (paragraph set), or the blocks of a
+// block container (blocks set). A wrapper passes its own sink on to its children.
+struct Sink {
+    Paragraph *paragraph = nullptr;
+    QList<Block> *blocks = nullptr;
+};
+
+std::expected<void, DocxError> readChild(ReadState &st, const Sink &sink, ParagraphProps *props);
+
+// What a skipped subtree held: a w:t and a txbxContent, in any namespace.
+struct SkipFacts {
+    bool hasText = false;
+    bool hasTextBox = false;
+};
+
+// Skips the subtree of the current element, which has been started, and reports what it held. The walk
+// is iterative, so the depth of the subtree never reaches the call stack.
+std::expected<SkipFacts, DocxError> skipSubtree(PartReader &reader) {
+    SkipFacts facts;
+    qint64 depth = 0;
+    while (true) {
+        auto token = reader.next();
+        if (!token)
+            return std::unexpected(token.error());
+        switch (*token) {
+        case QXmlStreamReader::StartElement:
+            facts.hasText = facts.hasText || reader.xml().name() == kText;
+            facts.hasTextBox = facts.hasTextBox || reader.xml().name() == kTextBoxContent;
+            ++depth;
+            break;
+        case QXmlStreamReader::EndElement:
+            if (depth == 0)
+                return facts;
+            --depth;
+            break;
+        case QXmlStreamReader::EndDocument:
+            return std::unexpected(DocxError::Corrupt);
+        default:
+            break;
+        }
+    }
+}
+
+// Skips one element that has no content rule and counts what it hides (SAFE-04). Deleted revisions
+// (w:del, w:moveFrom) and their deleted text are skipped without a warning (T-02-09). A picture is
+// ImageSkipped, or TextBoxSkipped when it holds a text box. A txbxContent met outside a picture is
+// TextBoxSkipped. A footnote or endnote reference and a symbol are OtherSkipped. Any other element with
+// a w:t inside is OtherSkipped; an element without text (bookmarks, proofing marks, properties) is
+// skipped silently.
+std::expected<void, DocxError> skipUnknown(ReadState &st) {
+    PartReader &reader = st.reader;
+    const QXmlStreamReader &xml = reader.xml();
+    if (isWml(xml, kDeleted) || isWml(xml, kMoveFrom) || isWml(xml, kDelText) || isWml(xml, kInstrText) ||
+        isWml(xml, kDelInstrText))
+        return skipElement(reader);
+
+    const bool picture = isWml(xml, kDrawing) || isWml(xml, kPict) || isWml(xml, kObject);
+    const bool textBox = xml.name() == kTextBoxContent;
+    const bool alwaysCounted =
+        isWml(xml, kFootnoteReference) || isWml(xml, kEndnoteReference) || isWml(xml, kSymbol);
+    auto facts = skipSubtree(reader);
+    if (!facts)
+        return std::unexpected(facts.error());
+    if (picture)
+        st.warnings.append(facts->hasTextBox ? DocxWarning::TextBoxSkipped : DocxWarning::ImageSkipped);
+    else if (textBox)
+        st.warnings.append(DocxWarning::TextBoxSkipped);
+    else if (alwaysCounted || facts->hasText)
+        st.warnings.append(DocxWarning::OtherSkipped);
+    return {};
+}
+
+// Appends text to a paragraph. The text is counted toward kMaxTextChars before it is kept, so a refused
+// document leaves no partial text behind (D-03).
+std::expected<void, DocxError> appendText(ReadState &st, Paragraph &paragraph, QStringView text) {
+    st.budget.textChars += text.size();
+    if (st.budget.textChars > documents::kMaxTextChars)
+        return std::unexpected(DocxError::Limit);
+    paragraph.text.append(text);
+    return {};
+}
+
+// Appends the character of an empty element (tab, break, hyphen) and consumes the element.
+std::expected<void, DocxError> appendSymbol(ReadState &st, Paragraph &paragraph, QStringView text) {
+    if (auto kept = appendText(st, paragraph, text); !kept)
+        return kept;
+    return skipElement(st.reader);
+}
+
+// Reads the character data of one w:t right after its StartElement. Every character token is kept as
+// is, whitespace and CDATA included (DOCX-06). An element inside w:t is not text and is skipped.
+std::expected<void, DocxError> readText(ReadState &st, Paragraph &paragraph) {
+    while (true) {
+        auto token = st.reader.next();
+        if (!token)
+            return std::unexpected(token.error());
+        switch (*token) {
+        case QXmlStreamReader::Characters:
+            if (auto kept = appendText(st, paragraph, st.reader.xml().text()); !kept)
+                return kept;
+            break;
+        case QXmlStreamReader::StartElement:
+            if (auto skipped = skipElement(st.reader); !skipped)
+                return skipped;
+            break;
+        case QXmlStreamReader::EndElement:
+            return {};
+        case QXmlStreamReader::EndDocument:
+            return std::unexpected(DocxError::Corrupt);
+        default:
+            break;
+        }
+    }
+}
+
+// Reads the content of one w:r right after its StartElement into the paragraph. A tab and a ptab give
+// a tab; a break and a carriage return give a line break; the two hyphens give their characters (A12,
+// A14, OQ11). Run properties, deleted text, field instructions and the rest go to skipUnknown.
+std::expected<void, DocxError> readRun(ReadState &st, Paragraph &paragraph) {
+    return forEachChild(st.reader, [&st, &paragraph](PartReader &) -> std::expected<void, DocxError> {
+        const QXmlStreamReader &xml = st.reader.xml();
+        if (isWml(xml, kText))
+            return readText(st, paragraph);
+        if (isWml(xml, kTab) || isWml(xml, kPtab))
+            return appendSymbol(st, paragraph, u"\t");
+        if (isWml(xml, kBreak) || isWml(xml, kCarriageReturn))
+            return appendSymbol(st, paragraph, u"\n");
+        if (isWml(xml, kNoBreakHyphen))
+            return appendSymbol(st, paragraph, u"‑");
+        if (isWml(xml, kSoftHyphen))
+            return appendSymbol(st, paragraph, u"­");
+        return skipUnknown(st);
+    });
+}
+
+// Reads the children of the current element up to its end tag into sink.
+std::expected<void, DocxError> readContent(ReadState &st, const Sink &sink, ParagraphProps *props) {
+    return forEachChild(st.reader, [&st, &sink, props](PartReader &) { return readChild(st, sink, props); });
+}
+
+// Reads one w:p up to its end tag into a paragraph; w:pPr sets props. Called right after the StartElement
+// of w:p.
+std::expected<Paragraph, DocxError> readParagraph(ReadState &st, ParagraphProps &props) {
+    Paragraph paragraph;
+    if (auto content = readContent(st, Sink{&paragraph, nullptr}, &props); !content)
+        return std::unexpected(content.error());
+    return paragraph;
+}
+
+// One w:p among blocks: counted as a node before it is read, then its heading and list are set.
+std::expected<void, DocxError> readBlockParagraph(ReadState &st, QList<Block> &blocks) {
+    // The node is counted before it is read, so a flood of empty paragraphs stops at the limit.
+    if (!countNode(st))
+        return std::unexpected(DocxError::Limit);
+    ParagraphProps props;
+    auto paragraph = readParagraph(st, props);
+    if (!paragraph)
+        return std::unexpected(paragraph.error());
+    paragraph->headingLevel = headingLevel(props, st.styles);
+    applyList(*paragraph, props, st.styles, st.numbering, st.lists, st.warnings);
+    blocks.append(Block{std::move(*paragraph)});
+    return {};
+}
+
+// w:sdt right after its StartElement, a counted element (T-02-08). Its w:sdtPr is read only for
+// w:showingPlcHdr: a placeholder content is skipped without a warning (A11). Its w:sdtContent gives the
+// same kind of content as the container.
+std::expected<void, DocxError> readSdt(ReadState &st, const Sink &sink) {
+    DepthScope depth(st);
+    if (depth.exceeded())
+        return std::unexpected(DocxError::Limit);
+    bool placeholder = false;
+    return forEachChild(
+        st.reader, [&st, &sink, &placeholder](PartReader &) -> std::expected<void, DocxError> {
+            const QXmlStreamReader &xml = st.reader.xml();
+            if (isWml(xml, kSdtProperties)) {
+                return forEachChild(st.reader,
+                                    [&placeholder](PartReader &child) -> std::expected<void, DocxError> {
+                                        if (isWml(child.xml(), kShowingPlaceholder))
+                                            placeholder = true;
+                                        return skipElement(child);
+                                    });
+            }
+            if (isWml(xml, kSdtContent)) {
+                if (placeholder)
+                    return skipElement(st.reader);
+                return readContent(st, sink, nullptr);
+            }
+            return skipUnknown(st);
+        });
+}
+
+// mc:AlternateContent right after its StartElement, a counted element (T-02-08). Only the first mc:Choice
+// is read (A2); the other branches are skipped. mc:Fallback is read only when no branch came before it.
+std::expected<void, DocxError> readAlternate(ReadState &st, const Sink &sink) {
+    DepthScope depth(st);
+    if (depth.exceeded())
+        return std::unexpected(DocxError::Limit);
+    bool branchRead = false;
+    return forEachChild(st.reader, [&st, &sink, &branchRead](PartReader &) -> std::expected<void, DocxError> {
+        const QXmlStreamReader &xml = st.reader.xml();
+        if (isMc(xml, kChoice) || isMc(xml, kFallback)) {
+            if (branchRead)
+                return skipElement(st.reader);
+            branchRead = true;
+            return readContent(st, sink, nullptr);
+        }
+        return skipUnknown(st);
+    });
+}
+
+// One child of the current element, read whole. In block mode a paragraph and a table become blocks. In
+// paragraph mode a run, a w:t and (when props is set) w:pPr are read. Hyperlinks, insertions, fields,
+// smart tags, custom XML and structured document tags pass the sink on to their children; all other
+// elements go to skipUnknown.
+std::expected<void, DocxError> readChild(ReadState &st, const Sink &sink, ParagraphProps *props) {
+    const QXmlStreamReader &xml = st.reader.xml();
+    if (sink.paragraph == nullptr) {
+        if (isWml(xml, kParagraph))
+            return readBlockParagraph(st, *sink.blocks);
+        if (isWml(xml, kTable)) {
+            auto table = readTable(st);
+            if (!table)
+                return std::unexpected(table.error());
+            sink.blocks->append(Block{std::move(*table)});
+            return {};
+        }
+    } else {
+        if (props != nullptr && isWml(xml, kParagraphProperties))
+            return readParagraphProps(st.reader, *props);
+        if (isWml(xml, kText))
+            return readText(st, *sink.paragraph);
+        if (isWml(xml, kRun))
+            return readRun(st, *sink.paragraph);
+    }
+    if (isWml(xml, kHyperlink) || isWml(xml, kInserted) || isWml(xml, kMoveTo) || isWml(xml, kSmartTag) ||
+        isWml(xml, kSimpleField) || isWml(xml, kCustomXml)) {
+        DepthScope depth(st);
+        if (depth.exceeded())
+            return std::unexpected(DocxError::Limit);
+        return readContent(st, sink, nullptr);
+    }
+    if (isWml(xml, kSdt))
+        return readSdt(st, sink);
+    if (isMc(xml, kAlternateContent))
+        return readAlternate(st, sink);
+    return skipUnknown(st);
+}
+
+// One block child of a block container (w:body, w:tc, or a wrapper in block mode).
+std::expected<void, DocxError> readBlockChild(ReadState &st, QList<Block> &blocks) {
+    return readChild(st, Sink{nullptr, &blocks}, nullptr);
+}
+
 } // namespace
 
 std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
@@ -686,45 +1192,13 @@ std::expected<DocxDocument, DocxError> readDocxContent(const DocxParts &parts) {
         bodyFound = *token == QXmlStreamReader::StartElement && isWml(reader.xml(), kBody);
     }
 
+    // Children of w:body up to its end tag; the end of w:body is the end of the walk.
+    ReadState st{reader, *styles, *numbering, {}, {}, parts.warnings};
     DocxDocument document;
-    document.warnings = parts.warnings;
-    ParseBudget budget;
-    ListState lists;
-
-    // Direct children of w:body. Each child is consumed whole, so an EndElement seen here
-    // at this level is the end of w:body.
-    while (true) {
-        auto token = reader.next();
-        if (!token)
-            return std::unexpected(token.error());
-        switch (*token) {
-        case QXmlStreamReader::StartElement:
-            if (isWml(reader.xml(), kParagraph)) {
-                // The node is counted before it is read, so a flood of empty paragraphs stops at the limit.
-                if (++budget.nodes > documents::kMaxModelNodes)
-                    return std::unexpected(DocxError::Limit);
-                ParagraphProps props;
-                auto paragraph = readParagraph(reader, budget, props);
-                if (!paragraph)
-                    return std::unexpected(paragraph.error());
-                paragraph->headingLevel = headingLevel(props, *styles);
-                applyList(*paragraph, props, *styles, *numbering, lists, document.warnings);
-                document.blocks.append(Block{std::move(*paragraph)});
-            } else {
-                // Other body children (tables, drawings, fields) are not read in this plan (02-03).
-                auto skipped = skipElement(reader);
-                if (!skipped)
-                    return std::unexpected(skipped.error());
-            }
-            break;
-        case QXmlStreamReader::EndElement:
-            return document;
-        case QXmlStreamReader::EndDocument:
-            return std::unexpected(DocxError::Corrupt);
-        default:
-            break;
-        }
-    }
+    if (auto body = readBlocks(st, document.blocks); !body)
+        return std::unexpected(body.error());
+    document.warnings = std::move(st.warnings);
+    return document;
 }
 
 } // namespace documents
