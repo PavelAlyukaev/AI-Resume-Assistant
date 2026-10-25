@@ -79,6 +79,10 @@ constexpr QStringView kObject = u"object";
 constexpr QStringView kTextBoxContent = u"txbxContent"; // any namespace: w:txbxContent and wps:txbxContent
 constexpr QStringView kFootnoteReference = u"footnoteReference";
 constexpr QStringView kEndnoteReference = u"endnoteReference";
+constexpr QStringView kAltChunk = u"altChunk";
+constexpr QStringView kSubDoc = u"subDoc";
+constexpr QStringView kW14Namespace = u"http://schemas.microsoft.com/office/word/2010/wordml";
+constexpr QStringView kContentPart = u"contentPart";
 constexpr QStringView kMarkupCompatibilityNamespace =
     u"http://schemas.openxmlformats.org/markup-compatibility/2006";
 constexpr QStringView kAlternateContent = u"AlternateContent";
@@ -135,6 +139,12 @@ bool isWml(const QXmlStreamReader &xml, QStringView localName) {
 // The element is in the markup compatibility namespace (mc:AlternateContent, mc:Choice, mc:Fallback).
 bool isMc(const QXmlStreamReader &xml, QStringView localName) {
     return xml.namespaceUri() == kMarkupCompatibilityNamespace && xml.name() == localName;
+}
+
+// The element is in the Word 2010 namespace (w14:contentPart). It is not in the WordprocessingML
+// namespace, so isWml does not match it.
+bool isW14(const QXmlStreamReader &xml, QStringView localName) {
+    return xml.namespaceUri() == kW14Namespace && xml.name() == localName;
 }
 
 // Value of a WordprocessingML attribute of the current element (w:val, w:styleId, ...); empty when
@@ -919,10 +929,13 @@ struct Sink {
 
 std::expected<void, DocxError> readChild(ReadState &st, const Sink &sink, ParagraphProps *props);
 
-// What a skipped subtree held: a w:t and a txbxContent, in any namespace.
+// What a skipped subtree held: a w:t and a txbxContent, in any namespace; and a w:altChunk, w:subDoc or
+// w14:contentPart, which keep their content in another part (the flag reaches the elements inside a
+// hidden mc:AlternateContent, as in a run).
 struct SkipFacts {
     bool hasText = false;
     bool hasTextBox = false;
+    bool hasOtherPart = false;
 };
 
 // Skips the subtree of the current element, which has been started, and reports what it held. The walk
@@ -938,6 +951,8 @@ std::expected<SkipFacts, DocxError> skipSubtree(PartReader &reader) {
         case QXmlStreamReader::StartElement:
             facts.hasText = facts.hasText || reader.xml().name() == kText;
             facts.hasTextBox = facts.hasTextBox || reader.xml().name() == kTextBoxContent;
+            facts.hasOtherPart = facts.hasOtherPart || isWml(reader.xml(), kAltChunk) ||
+                                 isWml(reader.xml(), kSubDoc) || isW14(reader.xml(), kContentPart);
             ++depth;
             break;
         case QXmlStreamReader::EndElement:
@@ -958,7 +973,9 @@ std::expected<SkipFacts, DocxError> skipSubtree(PartReader &reader) {
 // ImageSkipped, or TextBoxSkipped when it holds a text box. A txbxContent met outside a picture is
 // TextBoxSkipped. A footnote or endnote reference and a symbol are OtherSkipped. Any other element with
 // a w:t inside is OtherSkipped; an element without text (bookmarks, proofing marks, properties) is
-// skipped silently.
+// skipped silently. A w:altChunk, a w:subDoc and a w14:contentPart (also one inside the skipped subtree)
+// keep their content in another part: that part is not read and its r:id is not resolved (D-08, D-10,
+// T-02-15), and each gives one OtherSkipped.
 std::expected<void, DocxError> skipUnknown(ReadState &st) {
     PartReader &reader = st.reader;
     const QXmlStreamReader &xml = reader.xml();
@@ -968,8 +985,9 @@ std::expected<void, DocxError> skipUnknown(ReadState &st) {
 
     const bool picture = isWml(xml, kDrawing) || isWml(xml, kPict) || isWml(xml, kObject);
     const bool textBox = xml.name() == kTextBoxContent;
-    const bool alwaysCounted =
-        isWml(xml, kFootnoteReference) || isWml(xml, kEndnoteReference) || isWml(xml, kSymbol);
+    const bool alwaysCounted = isWml(xml, kFootnoteReference) || isWml(xml, kEndnoteReference) ||
+                               isWml(xml, kSymbol) || isWml(xml, kAltChunk) || isWml(xml, kSubDoc) ||
+                               isW14(xml, kContentPart);
     auto facts = skipSubtree(reader);
     if (!facts)
         return std::unexpected(facts.error());
@@ -977,7 +995,7 @@ std::expected<void, DocxError> skipUnknown(ReadState &st) {
         st.warnings.append(facts->hasTextBox ? DocxWarning::TextBoxSkipped : DocxWarning::ImageSkipped);
     else if (textBox)
         st.warnings.append(DocxWarning::TextBoxSkipped);
-    else if (alwaysCounted || facts->hasText)
+    else if (alwaysCounted || facts->hasText || facts->hasOtherPart)
         st.warnings.append(DocxWarning::OtherSkipped);
     return {};
 }
