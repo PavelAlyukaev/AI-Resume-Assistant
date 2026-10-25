@@ -1,6 +1,8 @@
 #include "application/DocumentImport.h"
 #include "DocxFixtures.h"
+#include "documents/DocxModel.h"
 #include "documents/DocxTypes.h"
+#include "documents/ZipArchive.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -9,6 +11,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtTest>
+#include <variant>
 
 using namespace fixtures;
 
@@ -24,6 +27,18 @@ bool writeBytes(const QString &path, const QByteArray &bytes) {
     if (!file.open(QIODevice::WriteOnly))
         return false;
     return file.write(bytes) == bytes.size();
+}
+
+// One WordprocessingML element with its own xmlns:w declaration. readDocxFile parses the body and
+// the styles (plan 02-04), so the phase-1 test parts are well formed WordprocessingML too.
+QByteArray wmlElement(const QByteArray &name, const QByteArray &content) {
+    return "<w:" + name + " xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">" +
+           content + "</w:" + name + ">";
+}
+
+// A word/document.xml whose w:body holds bodyXml; an empty body is a valid document.
+QByteArray wordDocument(const QByteArray &bodyXml = {}) {
+    return wmlElement("document", "<w:body>" + bodyXml + "</w:body>");
 }
 
 // Sorted listing of every entry under root: relative path, kind, size and last-modified time.
@@ -56,9 +71,9 @@ class DocumentImportTest : public QObject {
         const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
         QVERIFY(QDir().mkpath(dir));
 
-        const QByteArray document = QStringLiteral("<w:document>Тело резюме</w:document>").toUtf8();
-        const QByteArray styles = QStringLiteral("<w:styles>Стили</w:styles>").toUtf8();
-        const QByteArray numbering = QStringLiteral("<w:numbering>Нумерация</w:numbering>").toUtf8();
+        const QByteArray document = wordDocument(QStringLiteral("<w:p><w:r><w:t>Тело резюме</w:t></w:r></w:p>").toUtf8());
+        const QByteArray styles = wmlElement("styles", QStringLiteral("Стили").toUtf8());
+        const QByteArray numbering = wmlElement("numbering", QStringLiteral("Нумерация").toUtf8());
         const QByteArray archive = buildStoredZip({
             ZipEntry{"word/document.xml", document},
             ZipEntry{"word/styles.xml", styles},
@@ -73,6 +88,70 @@ class DocumentImportTest : public QObject {
         QCOMPARE(result->stylesXml, styles);
         QCOMPARE(result->numberingXml, numbering);
         QVERIFY(result->warnings.isEmpty());
+    }
+
+    void readsDocumentContentFromCyrillicDirectory() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // Heading1 has the name "heading 1": its level comes from the style (plan 02-02).
+        const QByteArray styles = wmlElement(
+            "styles", "<w:style w:type=\"paragraph\" w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/></w:style>");
+        const QByteArray body =
+            QStringLiteral("<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
+                           "<w:r><w:t>Опыт работы</w:t></w:r></w:p>"
+                           "<w:p><w:r><w:t>Ёлкин Пётр, менеджер</w:t></w:r></w:p>")
+                .toUtf8();
+        const QByteArray archive = buildStoredZip({
+            ZipEntry{"[Content_Types].xml", "<Types/>"},
+            ZipEntry{"word/document.xml", wordDocument(body)},
+            ZipEntry{"word/styles.xml", styles},
+            ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
+        });
+        const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
+        QVERIFY(writeBytes(path, archive));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(result.has_value(), "a DOCX with a heading and a paragraph must import");
+        QVERIFY(result->warnings.isEmpty());
+        QCOMPARE(result->document.blocks.size(), qsizetype{2});
+
+        const auto *heading = std::get_if<documents::Paragraph>(&result->document.blocks.at(0).content);
+        QVERIFY2(heading != nullptr, "the first block must be a paragraph");
+        QCOMPARE(heading->headingLevel, 1);
+        QCOMPARE(heading->text, QStringLiteral("Опыт работы"));
+
+        const auto *plain = std::get_if<documents::Paragraph>(&result->document.blocks.at(1).content);
+        QVERIFY2(plain != nullptr, "the second block must be a paragraph");
+        QCOMPARE(plain->headingLevel, 0);
+        QCOMPARE(plain->text, QStringLiteral("Ёлкин Пётр, менеджер"));
+    }
+
+    void doctypeFileGivesUnsafeXmlTextNamingFileOnly() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // An internal entity whose value is the marker: the DOCTYPE is refused before any entity is
+        // expanded, so the marker never reaches the result.
+        const QByteArray document =
+            QStringLiteral("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                           "<!DOCTYPE w:document [<!ENTITY ext \"MARKER-DT-4412\">]>"
+                           "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+                           "<w:body><w:p><w:r><w:t>&ext;</w:t></w:r></w:p></w:body></w:document>")
+                .toUtf8();
+        const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
+        QVERIFY(writeBytes(path, buildStoredZip({ZipEntry{"word/document.xml", document}})));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(!result.has_value(), "a DOCTYPE in word/document.xml must not import");
+        QCOMPARE(result.error(),
+                 QStringLiteral("Файл «Резюме.docx» содержит DTD или внешние сущности XML, поэтому не открыт из "
+                                "соображений безопасности. Сохраните резюме в Word как .docx заново и повторите."));
+        QVERIFY(!result.error().contains(QStringLiteral("MARKER-DT-4412")));
     }
 
     void notZipMessageNamesFileOnly() {
@@ -220,7 +299,7 @@ class DocumentImportTest : public QObject {
         const QString textOnlyPath = QDir(dir).filePath(textOnlyName);
         QVERIFY(writeBytes(
             textOnlyPath,
-            buildStoredZip({ZipEntry{"word/document.xml", QStringLiteral("<w:document/>").toUtf8()}})));
+            buildStoredZip({ZipEntry{"word/document.xml", wordDocument()}})));
         auto withWarnings = DocumentImport::readDocxFile(textOnlyPath);
         QVERIFY2(withWarnings.has_value(), "a DOCX without optional parts must still import");
         QCOMPARE(withWarnings->warnings.size(), qsizetype{2});
@@ -232,9 +311,9 @@ class DocumentImportTest : public QObject {
         const QString fullPath = QDir(dir).filePath(fullName);
         QVERIFY(writeBytes(fullPath,
                            buildStoredZip({
-                               ZipEntry{"word/document.xml", QStringLiteral("<w:document/>").toUtf8()},
-                               ZipEntry{"word/styles.xml", QStringLiteral("<w:styles/>").toUtf8()},
-                               ZipEntry{"word/numbering.xml", QStringLiteral("<w:numbering/>").toUtf8()},
+                               ZipEntry{"word/document.xml", wordDocument()},
+                               ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+                               ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
                            })));
         auto complete = DocumentImport::readDocxFile(fullPath);
         QVERIFY2(complete.has_value(), "a complete DOCX must import");
@@ -292,9 +371,9 @@ class DocumentImportTest : public QObject {
         const QList<Input> inputs = {
             {QStringLiteral("Полный.docx"),
              buildStoredZip({
-                 ZipEntry{"word/document.xml", QStringLiteral("<w:document/>").toUtf8()},
-                 ZipEntry{"word/styles.xml", QStringLiteral("<w:styles/>").toUtf8()},
-                 ZipEntry{"word/numbering.xml", QStringLiteral("<w:numbering/>").toUtf8()},
+                 ZipEntry{"word/document.xml", wordDocument()},
+                 ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+                 ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
              })},
             {QStringLiteral("Текст.docx"), QStringLiteral("Обычный текст").toUtf8()},
             {QStringLiteral("Мусор.docx"), garbage},

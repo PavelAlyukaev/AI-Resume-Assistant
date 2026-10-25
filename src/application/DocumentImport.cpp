@@ -1,5 +1,6 @@
 #include "application/DocumentImport.h"
 #include "documents/DocxContainer.h"
+#include "documents/DocxContent.h"
 #include "documents/DocxTypes.h"
 #include <QFile>
 #include <QFileInfo>
@@ -133,11 +134,18 @@ std::expected<ImportedDocx, QString> readDocxFile(const QString &path) {
     if (!parts)
         return std::unexpected(errorText(parts.error(), fileName));
 
+    // 6. The body is parsed from the parts in memory (plan 02-04). Its error code becomes a text
+    //    too; the model carries the warnings of the parts, so no separate loop over them is needed.
+    auto content = documents::readDocxContent(*parts);
+    if (!content)
+        return std::unexpected(errorText(content.error(), fileName));
+
     ImportedDocx result;
+    result.document = std::move(*content);
     result.documentXml = std::move(parts->documentXml);
     result.stylesXml = std::move(parts->stylesXml);
     result.numberingXml = std::move(parts->numberingXml);
-    for (const documents::DocxWarning code : parts->warnings)
+    for (const documents::DocxWarning code : result.document.warnings)
         result.warnings.append(warningText(code, fileName));
     return result;
 }
