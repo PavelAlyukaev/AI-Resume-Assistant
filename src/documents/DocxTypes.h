@@ -26,6 +26,9 @@ enum class DocxWarning {
     StylesPartMissing,
     NumberingPartMissing,
     ListFormatApproximated, // a list whose number format is shown as a plain "N." (OQ5); one per numId
+    ImageSkipped,           // a picture, drawing or embedded object whose content is not shown (DOCX-07)
+    TextBoxSkipped,         // a text box (txbxContent) whose content is not shown (SAFE-04)
+    OtherSkipped,           // a footnote or endnote reference, a symbol, or an unknown element with text
 };
 
 // Units: "MB" in D-01 and D-02 is read as MiB (1024 * 1024 bytes). Owner confirmation pending.

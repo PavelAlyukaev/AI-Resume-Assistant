@@ -9,9 +9,18 @@ namespace {
 
 // Synthetic document wrapper: the w:document root with the WordprocessingML namespace and a
 // w:body that holds bodyXml. Every fixture is built in code; no file is read (T-02-05).
+// The prefixes of the fixtures: w, r, mc (markup compatibility), wp, a, pic, wps and v (VML). The
+// declarations do not change what is read; they only let the synthetic figures be well formed.
 QByteArray wrapBody(const QByteArray &bodyXml) {
     return QByteArrayLiteral(
-               "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+               "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" "
+               "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" "
+               "xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" "
+               "xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" "
+               "xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" "
+               "xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" "
+               "xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\" "
+               "xmlns:v=\"urn:schemas-microsoft-com:vml\">"
                "<w:body>") +
            bodyXml + QByteArrayLiteral("</w:body></w:document>");
 }
@@ -21,6 +30,13 @@ documents::DocxParts partsWithBody(const QByteArray &bodyXml) {
     documents::DocxParts parts;
     parts.documentXml = wrapBody(bodyXml);
     return parts;
+}
+
+// Parses one body and checks its warnings: the exact list, in document order (SAFE-04).
+void checkWarnings(const QByteArray &bodyXml, const QList<documents::DocxWarning> &expected) {
+    auto result = documents::readDocxContent(partsWithBody(bodyXml));
+    QVERIFY2(result.has_value(), "the body must parse");
+    QVERIFY2(result->warnings == expected, "the warnings must match the expected list");
 }
 
 // Synthetic word/styles.xml: the w:styles root with the given style elements. These are our
@@ -1001,6 +1017,25 @@ class DocxContentTest : public QObject {
         QCOMPARE(wide.error(), documents::DocxError::Limit);
     }
 
+    void rowsInsideWrapperKeepCells() {
+        // A w:sdt around a w:tr and its cells: the cells are read, not dropped as an unknown element.
+        const QByteArray rows =
+            QByteArrayLiteral("<w:sdt><w:sdtPr><w:alias w:val=\"Строки\"/></w:sdtPr><w:sdtContent>") +
+            rowXml(cellXml("", paragraphXml(QStringLiteral("А"))) +
+                   cellXml("", paragraphXml(QStringLiteral("Б")))) +
+            QByteArrayLiteral("</w:sdtContent></w:sdt>");
+        auto result = documents::readDocxContent(partsWithBody(tableXml(gridXml(2), rows)));
+        QVERIFY2(result.has_value(), "a row inside a content control must parse");
+        const auto *table = std::get_if<documents::Table>(&result->blocks.at(0).content);
+        QVERIFY2(table != nullptr, "the only block is a table");
+        QCOMPARE(table->rows.size(), qsizetype{1});
+        QCOMPARE(table->rows.at(0).cells.size(), qsizetype{2});
+        QStringList texts;
+        collectTexts(result->blocks, texts);
+        QCOMPARE(texts, (QStringList{QStringLiteral("А"), QStringLiteral("Б")}));
+        QVERIFY2(result->warnings.isEmpty(), "a content control around rows is not a skipped element");
+    }
+
     void tableNodesCountedInLimit() {
         // No w:tblGrid: the grid is the widest row. One table, one row and n empty cells are n + 2 nodes.
         auto oneRow = [](int cells) {
@@ -1016,6 +1051,195 @@ class DocxContentTest : public QObject {
         auto refused = documents::readDocxContent(partsWithBody(oneRow(49999)));
         QVERIFY2(!refused.has_value(), "one cell over kMaxModelNodes must be refused");
         QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
+
+    void inlineWrappersAndTracking_data() {
+        QTest::addColumn<QByteArray>("paragraph");
+        QTest::addColumn<QString>("expected");
+
+        QTest::newRow("hyperlink keeps its text")
+            << QByteArray("<w:p><w:hyperlink r:id=\"rId9\"><w:r><w:t>ссылка</w:t></w:r></w:hyperlink></w:p>")
+            << QStringLiteral("ссылка");
+        QTest::newRow("insertion keeps its text")
+            << QByteArray(
+                   "<w:p><w:ins w:id=\"1\" w:author=\"Иван\"><w:r><w:t>добавлено</w:t></w:r></w:ins></w:p>")
+            << QStringLiteral("добавлено");
+        QTest::newRow("deletion gives no text")
+            << QByteArray(
+                   "<w:p><w:del w:id=\"2\" w:author=\"Иван\"><w:r><w:t>удалено</w:t></w:r></w:del></w:p>")
+            << QString();
+        QTest::newRow("moved-from text gives no text")
+            << QByteArray("<w:p><w:moveFrom w:id=\"3\"><w:r><w:t>перенесено</w:t></w:r></w:moveFrom></w:p>")
+            << QString();
+        QTest::newRow("delText beside text")
+            << QByteArray("<w:p><w:r><w:t>основной</w:t><w:delText>удалено</w:delText></w:r></w:p>")
+            << QStringLiteral("основной");
+        QTest::newRow("sdt content without placeholder")
+            << QByteArray("<w:p><w:sdt><w:sdtPr><w:alias w:val=\"Имя\"/></w:sdtPr><w:sdtContent>"
+                          "<w:r><w:t>Контент</w:t></w:r></w:sdtContent></w:sdt></w:p>")
+            << QStringLiteral("Контент");
+        QTest::newRow("sdt placeholder gives no text")
+            << QByteArray("<w:p><w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>"
+                          "<w:r><w:t>Введите текст</w:t></w:r></w:sdtContent></w:sdt></w:p>")
+            << QString();
+        QTest::newRow("simple field keeps its result")
+            << QByteArray(
+                   "<w:p><w:fldSimple w:instr=\" ADDRESS \"><w:r><w:t>Москва</w:t></w:r></w:fldSimple></w:p>")
+            << QStringLiteral("Москва");
+        QTest::newRow("complex field keeps only its result")
+            << QByteArray("<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r>"
+                          "<w:r><w:instrText xml:space=\"preserve\"> ADDRESS </w:instrText></w:r>"
+                          "<w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+                          "<w:r><w:t>Москва</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>")
+            << QStringLiteral("Москва");
+        QTest::newRow("smart tag keeps its text")
+            << QByteArray("<w:p><w:smartTag w:uri=\"urn:x\" w:element=\"name\"><w:r><w:t>Иван</w:t></w:r>"
+                          "</w:smartTag></w:p>")
+            << QStringLiteral("Иван");
+        QTest::newRow("tab and break")
+            << QByteArray("<w:p><w:r><w:t>а</w:t><w:tab/><w:t>б</w:t><w:br/><w:t>в</w:t></w:r></w:p>")
+            << QStringLiteral("а\tб\nв");
+    }
+
+    void inlineWrappersAndTracking() {
+        QFETCH(QByteArray, paragraph);
+        QFETCH(QString, expected);
+        auto result = documents::readDocxContent(partsWithBody(paragraph));
+        QVERIFY2(result.has_value(), "inline content must parse");
+        const documents::Paragraph *only = paragraphAt(*result, 0);
+        QVERIFY2(only != nullptr, "the block is a paragraph");
+        QCOMPARE(only->text, expected);
+        QVERIFY2(result->warnings.isEmpty(), "none of these elements is skipped with a warning");
+    }
+
+    void drawingSkippedWithWarning() {
+        // A picture between two runs: its own text is absent, the text around it is kept as it is.
+        const QByteArray picture =
+            "<w:p><w:r><w:t>до</w:t></w:r><w:r><w:drawing><wp:inline><a:graphic>"
+            "<a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">"
+            "<pic:pic><pic:blipFill><a:blip r:embed=\"rId1\"/></pic:blipFill></pic:pic>"
+            "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+            "<w:r><w:t>после</w:t></w:r></w:p>";
+        auto result = documents::readDocxContent(partsWithBody(picture));
+        QVERIFY2(result.has_value(), "a picture must not refuse the document");
+        const documents::Paragraph *only = paragraphAt(*result, 0);
+        QVERIFY2(only != nullptr, "the block is a paragraph");
+        QCOMPARE(only->text, QStringLiteral("допосле"));
+        QVERIFY2(result->warnings == QList<documents::DocxWarning>{documents::DocxWarning::ImageSkipped},
+                 "exactly one ImageSkipped for the one picture");
+    }
+
+    void textBoxAndOtherSkippedCounted() {
+        using documents::DocxWarning;
+        // A text box in the first branch of mc:AlternateContent; the same text box in the fallback is not
+        // read.
+        const QByteArray textBox =
+            "<w:p><mc:AlternateContent><mc:Choice Requires=\"wps\"><w:r><w:drawing><wp:anchor><a:graphic>"
+            "<a:graphicData><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>Поле</w:t></w:r></w:p>"
+            "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>"
+            "</mc:Choice><mc:Fallback><w:r><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>Поле"
+            "</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></mc:Fallback>"
+            "</mc:AlternateContent></w:p>";
+        const QByteArray footnote = "<w:p><w:r><w:footnoteReference w:id=\"1\"/></w:r></w:p>";
+        const QByteArray unknown = "<w:p><w:unknownThing><w:r><w:t>Текст</w:t></w:r></w:unknownThing></w:p>";
+        const QByteArray marks =
+            "<w:p><w:bookmarkStart w:id=\"0\" w:name=\"x\"/><w:proofErr w:type=\"spellStart\"/>"
+            "<w:r><w:t>ок</w:t></w:r><w:bookmarkEnd w:id=\"0\"/></w:p>";
+
+        checkWarnings(textBox, {DocxWarning::TextBoxSkipped});
+        checkWarnings(footnote, {DocxWarning::OtherSkipped});
+        checkWarnings(unknown, {DocxWarning::OtherSkipped});
+        checkWarnings(marks, {});
+        checkWarnings(textBox + footnote + unknown + marks,
+                      {DocxWarning::TextBoxSkipped, DocxWarning::OtherSkipped, DocxWarning::OtherSkipped});
+    }
+
+    void alternateContentUsesChoiceOnly() {
+        const QByteArray alternate =
+            "<w:p><mc:AlternateContent><mc:Choice Requires=\"wps\"><w:r><w:t>Выбор</w:t></w:r></mc:Choice>"
+            "<mc:Fallback><w:r><w:t>Запасной</w:t></w:r></mc:Fallback></mc:AlternateContent></w:p>";
+        auto result = documents::readDocxContent(partsWithBody(alternate));
+        QVERIFY2(result.has_value(), "alternate content must parse");
+        const documents::Paragraph *only = paragraphAt(*result, 0);
+        QVERIFY2(only != nullptr, "the block is a paragraph");
+        QCOMPARE(only->text, QStringLiteral("Выбор"));
+        QVERIFY2(result->warnings.isEmpty(), "the fallback branch is not read and gives no warning");
+    }
+
+    void inlineNestingBoundedForEveryWrapper_data() {
+        QTest::addColumn<QByteArray>("opening");
+        QTest::addColumn<QByteArray>("closing");
+
+        QTest::newRow("hyperlink") << QByteArray("<w:hyperlink r:id=\"rId9\">")
+                                   << QByteArray("</w:hyperlink>");
+        QTest::newRow("ins") << QByteArray("<w:ins w:id=\"1\" w:author=\"a\">") << QByteArray("</w:ins>");
+        QTest::newRow("moveTo") << QByteArray("<w:moveTo w:id=\"1\" w:author=\"a\">")
+                                << QByteArray("</w:moveTo>");
+        QTest::newRow("smartTag") << QByteArray("<w:smartTag w:uri=\"urn:x\" w:element=\"n\">")
+                                  << QByteArray("</w:smartTag>");
+        QTest::newRow("fldSimple") << QByteArray("<w:fldSimple w:instr=\" X \">")
+                                   << QByteArray("</w:fldSimple>");
+        QTest::newRow("sdt") << QByteArray("<w:sdt><w:sdtContent>") << QByteArray("</w:sdtContent></w:sdt>");
+        QTest::newRow("customXml") << QByteArray("<w:customXml w:element=\"e\" w:uri=\"u\">")
+                                   << QByteArray("</w:customXml>");
+        QTest::newRow("AlternateContent") << QByteArray("<mc:AlternateContent><mc:Choice Requires=\"wps\">")
+                                          << QByteArray("</mc:Choice></mc:AlternateContent>");
+    }
+
+    void inlineNestingBoundedForEveryWrapper() {
+        QFETCH(QByteArray, opening);
+        QFETCH(QByteArray, closing);
+        const QByteArray run = "<w:r><w:t>x</w:t></w:r>";
+        auto nest = [&opening, &closing, &run](int levels) {
+            QByteArray xml = run;
+            for (int i = 0; i < levels; ++i)
+                xml = opening + xml + closing;
+            return QByteArray("<w:p>") + xml + QByteArray("</w:p>");
+        };
+
+        // 64 levels are accepted and keep the text; 65 levels are refused without a result (T-02-08).
+        auto accepted = documents::readDocxContent(partsWithBody(nest(64)));
+        QVERIFY2(accepted.has_value(), "64 levels of one wrapper must be accepted");
+        const documents::Paragraph *only = paragraphAt(*accepted, 0);
+        QVERIFY2(only != nullptr, "the block is a paragraph");
+        QCOMPARE(only->text, QStringLiteral("x"));
+
+        auto refused = documents::readDocxContent(partsWithBody(nest(65)));
+        QVERIFY2(!refused.has_value(), "65 levels of one wrapper must be refused");
+        QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
+
+    void symbolElementsMappedOrCounted_data() {
+        QTest::addColumn<QByteArray>("runXml");
+        QTest::addColumn<QString>("expected");
+        QTest::addColumn<int>("warnings");
+
+        QTest::newRow("noBreakHyphen maps to U+2011")
+            << QByteArray("<w:r><w:t>а</w:t><w:noBreakHyphen/><w:t>б</w:t></w:r>") << QStringLiteral("а‑б")
+            << 0;
+        QTest::newRow("softHyphen maps to U+00AD")
+            << QByteArray("<w:r><w:t>а</w:t><w:softHyphen/><w:t>б</w:t></w:r>") << QStringLiteral("а­б") << 0;
+        QTest::newRow("ptab maps to a tab")
+            << QByteArray("<w:r><w:t>а</w:t><w:ptab w:relativeTo=\"margin\" w:alignment=\"right\" "
+                          "w:leader=\"none\"/><w:t>б</w:t></w:r>")
+            << QStringLiteral("а\tб") << 0;
+        QTest::newRow("sym gives no text and one warning")
+            << QByteArray("<w:r><w:t>а</w:t><w:sym w:font=\"Symbol\" w:char=\"F0B7\"/><w:t>б</w:t></w:r>")
+            << QStringLiteral("аб") << 1;
+    }
+
+    void symbolElementsMappedOrCounted() {
+        QFETCH(QByteArray, runXml);
+        QFETCH(QString, expected);
+        QFETCH(int, warnings);
+        auto result =
+            documents::readDocxContent(partsWithBody(QByteArray("<w:p>") + runXml + QByteArray("</w:p>")));
+        QVERIFY2(result.has_value(), "a symbol element must not refuse the document");
+        const documents::Paragraph *only = paragraphAt(*result, 0);
+        QVERIFY2(only != nullptr, "the block is a paragraph");
+        QCOMPARE(only->text, expected);
+        QCOMPARE(result->warnings.count(documents::DocxWarning::OtherSkipped), qsizetype{warnings});
+        QCOMPARE(result->warnings.size(), qsizetype{warnings});
     }
 };
 

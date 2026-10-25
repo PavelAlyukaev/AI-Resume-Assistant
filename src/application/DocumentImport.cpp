@@ -85,6 +85,16 @@ QString warningText(documents::DocxWarning code, const QString &fileName) {
                    "В файле «%1» есть список с нумерацией, которую приложение показывает упрощённо: номера "
                    "показаны в виде «1.», «2.».")
             .arg(fileName);
+    case documents::DocxWarning::ImageSkipped:
+        return QStringLiteral(
+                   "В файле «%1» есть рисунок или встроенный объект: он не показан, текст вокруг сохранён.")
+            .arg(fileName);
+    case documents::DocxWarning::TextBoxSkipped:
+        return QStringLiteral("В файле «%1» есть текстовое поле: его содержимое не показано.").arg(fileName);
+    case documents::DocxWarning::OtherSkipped:
+        return QStringLiteral(
+                   "В файле «%1» есть элемент, который приложение не разбирает: его текст не показан.")
+            .arg(fileName);
     }
     return {};
 }
