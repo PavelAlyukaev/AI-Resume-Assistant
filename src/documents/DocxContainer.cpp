@@ -2,8 +2,10 @@
 #include "documents/ZipArchive.h"
 #include <algorithm>
 #include <array>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace documents {
 
@@ -12,6 +14,27 @@ namespace {
 constexpr std::string_view kDocumentEntry = "word/document.xml";
 constexpr std::string_view kStylesEntry = "word/styles.xml";
 constexpr std::string_view kNumberingEntry = "word/numbering.xml";
+constexpr std::string_view kCommentsEntry = "word/comments.xml";
+
+// True when name is prefix, then zero or more ASCII digits, then ".xml", with no other character.
+// Exact and case-sensitive, like the lookups of the other parts (OQ2, T-02-14). No regular
+// expression is used.
+bool isNumberedXmlPart(std::string_view name, std::string_view prefix) {
+    constexpr std::string_view suffix = ".xml";
+    if (name.size() < prefix.size() + suffix.size())
+        return false;
+    if (name.substr(0, prefix.size()) != prefix)
+        return false;
+    if (name.substr(name.size() - suffix.size()) != suffix)
+        return false;
+    const std::string_view digits = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+    return std::all_of(digits.begin(), digits.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+}
+
+// word/header<digits>.xml or word/footer<digits>.xml.
+bool isHeaderOrFooterEntry(std::string_view name) {
+    return isNumberedXmlPart(name, "word/header") || isNumberedXmlPart(name, "word/footer");
+}
 
 // ZIP local file header "PK\x03\x04" and empty-archive record "PK\x05\x06".
 constexpr std::array<char, 4> kZipLocalHeader{'P', 'K', '\x03', '\x04'};
@@ -107,6 +130,16 @@ std::expected<DocxParts, DocxError> readDocxParts(QByteArray bytes, qint64 unpac
     } else {
         parts.warnings.append(DocxWarning::NumberingPartMissing);
     }
+
+    // Headers, footers and comments are counted by entry name only (D-10). Their bytes are never
+    // read: no readPart or readEntry call is made for them, so a damaged payload cannot fail the
+    // import (SAFE-04). Each header or footer part gives one warning, in central-directory order.
+    for (const std::string &name : archive.entryNames()) {
+        if (isHeaderOrFooterEntry(name))
+            parts.warnings.append(DocxWarning::HeaderFooterSkipped);
+    }
+    if (archive.hasEntry(kCommentsEntry))
+        parts.warnings.append(DocxWarning::OtherSkipped);
 
     return parts;
 }

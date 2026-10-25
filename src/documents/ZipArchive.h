@@ -3,7 +3,9 @@
 #include <QByteArray>
 #include <expected>
 #include <memory>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace documents {
 
@@ -20,6 +22,10 @@ class ZipArchive {
 
     // Exact, case-sensitive entry name. A name containing NUL never matches.
     bool hasEntry(std::string_view exactName) const;
+
+    // Only the names of the entries, kept when the archive was opened. No entry content is read
+    // here. The order is the order of the central directory.
+    std::vector<std::string> entryNames() const;
 
     // Bytes of one entry, or an error with no partial result (D-07). Reading stops with
     // DocxError::Limit before the running total would exceed maxBytes.

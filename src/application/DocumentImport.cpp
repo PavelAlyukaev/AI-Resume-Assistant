@@ -1,5 +1,6 @@
 #include "application/DocumentImport.h"
 #include "documents/DocxContainer.h"
+#include "documents/DocxContent.h"
 #include "documents/DocxTypes.h"
 #include <QFile>
 #include <QFileInfo>
@@ -55,6 +56,16 @@ QString errorText(documents::DocxError code, const QString &fileName) {
         return QStringLiteral(
                    "В файле «%1» не найден текст резюме. Сохраните его как .docx в Word и повторите.")
             .arg(fileName);
+    case documents::DocxError::UnsafeXml:
+        return QStringLiteral(
+                   "Файл «%1» содержит DTD или внешние сущности XML, поэтому не открыт из соображений "
+                   "безопасности. Сохраните резюме в Word как .docx заново и повторите.")
+            .arg(fileName);
+    case documents::DocxError::UnsupportedEncoding:
+        return QStringLiteral(
+                   "Файл «%1» записан в кодировке XML, которую приложение не читает (поддерживаются UTF-8 и "
+                   "UTF-16). Сохраните резюме в Word как .docx заново и повторите.")
+            .arg(fileName);
     }
     return {};
 }
@@ -70,6 +81,23 @@ QString warningText(documents::DocxWarning code, const QString &fileName) {
         return QStringLiteral(
                    "В файле «%1» нет описания нумерации: списки могут отображаться без маркеров и номеров.")
             .arg(fileName);
+    case documents::DocxWarning::ListFormatApproximated:
+        return QStringLiteral(
+                   "В файле «%1» есть список с нумерацией, которую приложение показывает упрощённо: номера "
+                   "показаны в виде «1.», «2.».")
+            .arg(fileName);
+    case documents::DocxWarning::ImageSkipped:
+        return QStringLiteral(
+                   "В файле «%1» есть рисунок или встроенный объект: он не показан, текст вокруг сохранён.")
+            .arg(fileName);
+    case documents::DocxWarning::TextBoxSkipped:
+        return QStringLiteral("В файле «%1» есть текстовое поле: его содержимое не показано.").arg(fileName);
+    case documents::DocxWarning::OtherSkipped:
+        return QStringLiteral(
+                   "В файле «%1» есть элемент, который приложение не разбирает: его текст не показан.")
+            .arg(fileName);
+    case documents::DocxWarning::HeaderFooterSkipped:
+        return QStringLiteral("В файле «%1» есть колонтитул: его текст не показан.").arg(fileName);
     }
     return {};
 }
@@ -108,11 +136,18 @@ std::expected<ImportedDocx, QString> readDocxFile(const QString &path) {
     if (!parts)
         return std::unexpected(errorText(parts.error(), fileName));
 
+    // 6. The body is parsed from the parts in memory (plan 02-04). Its error code becomes a text
+    //    too; the model carries the warnings of the parts, so no separate loop over them is needed.
+    auto content = documents::readDocxContent(*parts);
+    if (!content)
+        return std::unexpected(errorText(content.error(), fileName));
+
     ImportedDocx result;
+    result.document = std::move(*content);
     result.documentXml = std::move(parts->documentXml);
     result.stylesXml = std::move(parts->stylesXml);
     result.numberingXml = std::move(parts->numberingXml);
-    for (const documents::DocxWarning code : parts->warnings)
+    for (const documents::DocxWarning code : result.document.warnings)
         result.warnings.append(warningText(code, fileName));
     return result;
 }

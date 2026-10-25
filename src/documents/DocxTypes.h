@@ -7,6 +7,7 @@
 // never here.
 namespace documents {
 
+// Error codes only; the Russian texts for them live in the application layer (D-04, D-05).
 enum class DocxError {
     NotZip,
     Corrupt,
@@ -15,6 +16,8 @@ enum class DocxError {
     TooLarge,
     Limit,
     MissingPart,
+    UnsafeXml,           // a DOCTYPE, with or without entities (SAFE-03)
+    UnsupportedEncoding, // a declared XML encoding other than UTF-8 or UTF-16 (OQ3)
 };
 
 // Non-fatal findings. The read still succeeds; the warnings list holds one entry per
@@ -22,6 +25,12 @@ enum class DocxError {
 enum class DocxWarning {
     StylesPartMissing,
     NumberingPartMissing,
+    ListFormatApproximated, // a list whose number format is shown as a plain "N." (OQ5); one per numId
+    ImageSkipped,           // a picture, drawing or embedded object whose content is not shown (DOCX-07)
+    TextBoxSkipped,         // a text box (txbxContent) whose content is not shown (SAFE-04)
+    OtherSkipped,           // a footnote or endnote reference, a symbol, or an unknown element with text
+    HeaderFooterSkipped,    // a word/header<N>.xml or word/footer<N>.xml part; counted by name, never read
+                            // (D-10, OQ2)
 };
 
 // Units: "MB" in D-01 and D-02 is read as MiB (1024 * 1024 bytes). Owner confirmation pending.
@@ -44,7 +53,16 @@ inline constexpr qint64 kMaxCompressionRatio = 100;
 // Planner choice, enforced in plan 01-04. Value to confirm with the owner.
 inline constexpr qint64 kCompressionCheckAfterBytes = qint64{1024} * 1024;
 
-// D-03, enforced in Phase 2.
+// D-03: total text length in UTF-16 units, enforced in readDocxContent as the text accumulates.
 inline constexpr qint64 kMaxTextChars = 200000;
+
+// OQ9, T-02-02: limit on the number of model nodes (paragraphs, tables, rows, cells), enforced in
+// readDocxContent. A byte budget does not bound empty paragraphs, so the count is needed.
+inline constexpr qint64 kMaxModelNodes = 50000;
+
+// OQ7, A9: nesting depth limit, a planner value. Counted elements are w:tbl, w:sdt, w:customXml,
+// w:hyperlink, w:ins, w:moveTo, w:smartTag, w:fldSimple and the chosen mc:AlternateContent branch.
+// A deeper nesting gives DocxError::Limit (T-02-08).
+inline constexpr qint64 kMaxNestingDepth = 64;
 
 } // namespace documents
