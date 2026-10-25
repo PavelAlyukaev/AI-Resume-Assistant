@@ -138,10 +138,76 @@ QByteArray documentWithProlog(const QByteArray &prolog, const QByteArray &bodyXm
     return prolog + wrapBody(bodyXml);
 }
 
-// A table with one grid column and one row whose single cell holds cellXml.
-QByteArray oneCellTable(const QByteArray &cellXml) {
+// A table with one grid column and one row whose single cell holds content.
+QByteArray oneCellTable(const QByteArray &content) {
     return QByteArrayLiteral("<w:tbl><w:tblGrid><w:gridCol w:w=\"9000\"/></w:tblGrid><w:tr><w:tc>") +
-           cellXml + QByteArrayLiteral("</w:tc></w:tr></w:tbl>");
+           content + QByteArrayLiteral("</w:tc></w:tr></w:tbl>");
+}
+
+// A w:tblGrid with the given number of w:gridCol elements.
+QByteArray gridXml(int columns) {
+    QByteArray xml = "<w:tblGrid>";
+    for (int i = 0; i < columns; ++i)
+        xml += "<w:gridCol w:w=\"1000\"/>";
+    return xml + "</w:tblGrid>";
+}
+
+// A w:tbl from its grid and its w:tr elements.
+QByteArray tableXml(const QByteArray &grid, const QByteArray &rows) {
+    return "<w:tbl>" + grid + rows + "</w:tbl>";
+}
+
+// A w:tr from its w:tc elements.
+QByteArray rowXml(const QByteArray &cells) { return "<w:tr>" + cells + "</w:tr>"; }
+
+// A w:tc with the given w:tcPr children (none when empty) and content.
+QByteArray cellXml(const QByteArray &tcPrChildren, const QByteArray &content) {
+    QByteArray xml = "<w:tc>";
+    if (!tcPrChildren.isEmpty())
+        xml += "<w:tcPr>" + tcPrChildren + "</w:tcPr>";
+    return xml + content + "</w:tc>";
+}
+
+// For each row, how many times each grid column is covered: by a cell that starts in the row, or by
+// a vertical merge that started in an earlier row and still spans the row. A valid table covers
+// every column of every row exactly once (DOCX-05, T-02-10).
+QList<QList<int>> columnCoverage(const documents::Table &table) {
+    const auto grid = static_cast<qsizetype>(table.gridColumns);
+    QList<QList<int>> coverage;
+    QList<int> active(grid, 0); // rows after the current one that a merge still covers, per column
+    for (const auto &row : table.rows) {
+        QList<int> cover(grid, 0);
+        QList<int> next(grid, 0);
+        for (qsizetype c = 0; c < grid; ++c) {
+            if (active.at(c) > 0) {
+                cover[c] += 1;
+                next[c] = active.at(c) - 1;
+            }
+        }
+        for (const auto &cell : row.cells) {
+            for (qsizetype c = cell.startColumn; c < cell.startColumn + cell.columnSpan && c < grid; ++c) {
+                cover[c] += 1;
+                next[c] = cell.rowSpan - 1;
+            }
+        }
+        coverage.append(cover);
+        active = next;
+    }
+    return coverage;
+}
+
+// The texts of all paragraphs in document order; the cells of tables are read recursively.
+void collectTexts(const QList<documents::Block> &blocks, QStringList &texts) {
+    for (const auto &block : blocks) {
+        if (const auto *paragraph = std::get_if<documents::Paragraph>(&block.content)) {
+            texts << paragraph->text;
+        } else if (const auto *table = std::get_if<documents::Table>(&block.content)) {
+            for (const auto &row : table->rows) {
+                for (const auto &cell : row.cells)
+                    collectTexts(cell.blocks, texts);
+            }
+        }
+    }
 }
 
 constexpr auto kUtf8Declaration = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
@@ -777,6 +843,178 @@ class DocxContentTest : public QObject {
         const QString over = chunk + QChar(u'я');
         auto refused = documents::readDocxContent(partsWithBody(oneCellTable(paragraphXml(over))));
         QVERIFY2(!refused.has_value(), "one character over kMaxTextChars in a cell must be refused");
+        QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
+
+    void tableRowsKeepGridWidth_data() {
+        QTest::addColumn<QByteArray>("rowsXml");
+        QTest::addColumn<int>("gridColumns");
+        QTest::addColumn<QString>("expected");
+
+        const QByteArray empty = "<w:p/>";
+        const QByteArray spanTwo = cellXml("<w:gridSpan w:val=\"2\"/>", empty);
+        QTest::newRow("span of two, then one cell")
+            << rowXml(spanTwo + cellXml("", empty)) << 3 << QStringLiteral("0:2,2:1");
+        QTest::newRow("short row is padded")
+            << rowXml(cellXml("", empty)) << 3 << QStringLiteral("0:1,1:1,2:1");
+        QTest::newRow("span beyond the grid is trimmed")
+            << rowXml(cellXml("<w:gridSpan w:val=\"5\"/>", empty)) << 3 << QStringLiteral("0:3");
+        QTest::newRow("row without cells is padded")
+            << rowXml(QByteArray()) << 2 << QStringLiteral("0:1,1:1");
+        QTest::newRow("rows of different shape")
+            << rowXml(spanTwo + cellXml("", empty)) +
+                   rowXml(cellXml("", empty) + cellXml("", empty) + cellXml("", empty))
+            << 3 << QStringLiteral("0:2,2:1;0:1,1:1,2:1");
+    }
+
+    void tableRowsKeepGridWidth() {
+        QFETCH(QByteArray, rowsXml);
+        QFETCH(int, gridColumns);
+        QFETCH(QString, expected);
+
+        auto result = documents::readDocxContent(partsWithBody(tableXml(gridXml(gridColumns), rowsXml)));
+        QVERIFY2(result.has_value(), "a table with short, spanning and empty rows must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{1});
+        const auto *table = std::get_if<documents::Table>(&result->blocks.at(0).content);
+        QVERIFY2(table != nullptr, "the only block is a table");
+        QCOMPARE(table->gridColumns, gridColumns);
+
+        QStringList rows;
+        for (const auto &row : table->rows) {
+            QStringList cells;
+            for (const auto &cell : row.cells)
+                cells << QStringLiteral("%1:%2").arg(cell.startColumn).arg(cell.columnSpan);
+            rows << cells.join(QLatin1Char(','));
+        }
+        QCOMPARE(rows.join(QLatin1Char(';')), expected);
+
+        // Invariant: every grid column of every row is covered exactly once.
+        for (const auto &cover : columnCoverage(*table)) {
+            for (int count : cover)
+                QCOMPARE(count, 1);
+        }
+    }
+
+    void vMergeNotDuplicated() {
+        const QByteArray restart =
+            cellXml("<w:vMerge w:val=\"restart\"/>", paragraphXml(QStringLiteral("Группа")));
+        const QByteArray continueVal =
+            cellXml("<w:vMerge w:val=\"continue\"/>", paragraphXml(QStringLiteral("Продолжение А")));
+        const QByteArray continueBare = cellXml("<w:vMerge/>", paragraphXml(QStringLiteral("Продолжение Б")));
+        const QByteArray rows = rowXml(restart + cellXml("", paragraphXml(QStringLiteral("Б1")))) +
+                                rowXml(continueVal + cellXml("", paragraphXml(QStringLiteral("Б2")))) +
+                                rowXml(continueBare + cellXml("", paragraphXml(QStringLiteral("Б3"))));
+
+        auto result = documents::readDocxContent(partsWithBody(tableXml(gridXml(2), rows)));
+        QVERIFY2(result.has_value(), "a vertical merge over three rows must parse");
+        QCOMPARE(result->blocks.size(), qsizetype{1});
+        const auto *table = std::get_if<documents::Table>(&result->blocks.at(0).content);
+        QVERIFY2(table != nullptr, "the only block is a table");
+        QCOMPARE(table->rows.size(), qsizetype{3});
+
+        // The first row holds the group cell with rowSpan 3 and its own cell in column 1.
+        const auto &first = table->rows.at(0).cells;
+        QCOMPARE(first.size(), qsizetype{2});
+        QCOMPARE(first.at(0).startColumn, 0);
+        QCOMPARE(first.at(0).rowSpan, 3);
+
+        // The rows below hold only their own cell in column 1: no second cell starts in column 0.
+        for (qsizetype r = 1; r < 3; ++r) {
+            const auto &cells = table->rows.at(r).cells;
+            QCOMPARE(cells.size(), qsizetype{1});
+            QCOMPARE(cells.at(0).startColumn, 1);
+            QCOMPARE(cells.at(0).rowSpan, 1);
+        }
+
+        // The text of the continuation cells is not repeated.
+        QStringList texts;
+        collectTexts(result->blocks, texts);
+        QCOMPARE(texts, (QStringList{QStringLiteral("Группа"), QStringLiteral("Б1"), QStringLiteral("Б2"),
+                                     QStringLiteral("Б3")}));
+        for (const auto &cover : columnCoverage(*table)) {
+            for (int count : cover)
+                QCOMPARE(count, 1);
+        }
+    }
+
+    void emptyAndNestedTables() {
+        const QByteArray inner =
+            tableXml(gridXml(1), rowXml(cellXml("", paragraphXml(QStringLiteral("Вложенная")))));
+        const QByteArray rows = rowXml(cellXml("", "<w:p/>") + cellXml("", inner));
+
+        auto result = documents::readDocxContent(partsWithBody(tableXml(gridXml(2), rows)));
+        QVERIFY2(result.has_value(), "an empty cell and a nested table must parse");
+        const auto *table = std::get_if<documents::Table>(&result->blocks.at(0).content);
+        QVERIFY2(table != nullptr, "the only block is a table");
+        QCOMPARE(table->gridColumns, 2);
+
+        const auto &cells = table->rows.at(0).cells;
+        QCOMPARE(cells.size(), qsizetype{2});
+
+        // The empty cell holds one paragraph with empty text.
+        QCOMPARE(cells.at(0).blocks.size(), qsizetype{1});
+        const auto *empty = std::get_if<documents::Paragraph>(&cells.at(0).blocks.at(0).content);
+        QVERIFY2(empty != nullptr, "the empty cell holds a paragraph");
+        QVERIFY(empty->text.isEmpty());
+
+        // The nested table is a block of its cell, and its grid does not change the outer one.
+        QCOMPARE(cells.at(1).blocks.size(), qsizetype{1});
+        const auto *nested = std::get_if<documents::Table>(&cells.at(1).blocks.at(0).content);
+        QVERIFY2(nested != nullptr, "the nested table is a block of the cell");
+        QCOMPARE(nested->gridColumns, 1);
+        QStringList texts;
+        collectTexts(cells.at(1).blocks, texts);
+        QCOMPARE(texts, QStringList{QStringLiteral("Вложенная")});
+    }
+
+    void nestingDepthLimit() {
+        // Each table holds the next one in its only cell. 64 levels are accepted, 65 are refused.
+        auto nestedTables = [](int levels) {
+            QByteArray xml = "<w:p/>";
+            for (int i = 0; i < levels; ++i)
+                xml = tableXml(gridXml(1), rowXml(cellXml("", xml)));
+            return xml;
+        };
+        auto accepted = documents::readDocxContent(partsWithBody(nestedTables(64)));
+        QVERIFY2(accepted.has_value(), "64 nested tables must be accepted");
+
+        auto refused = documents::readDocxContent(partsWithBody(nestedTables(65)));
+        QVERIFY2(!refused.has_value(), "65 nested tables must be refused");
+        QCOMPARE(refused.error(), documents::DocxError::Limit);
+    }
+
+    void paddingCellsCountedInNodeLimit() {
+        // One table, one row, one empty cell and a grid of N columns: N - 1 padding cells follow the
+        // cell, and each one is a node. Nodes are N + 2, so N = 49998 is the last accepted value.
+        auto oneCellGrid = [](int columns) {
+            return tableXml(gridXml(columns), rowXml(cellXml("", QByteArray())));
+        };
+        auto accepted = documents::readDocxContent(partsWithBody(oneCellGrid(49998)));
+        QVERIFY2(accepted.has_value(), "exactly kMaxModelNodes including padding must be accepted");
+
+        auto refused = documents::readDocxContent(partsWithBody(oneCellGrid(49999)));
+        QVERIFY2(!refused.has_value(), "one padding cell over kMaxModelNodes must be refused");
+        QCOMPARE(refused.error(), documents::DocxError::Limit);
+
+        auto wide = documents::readDocxContent(partsWithBody(oneCellGrid(60000)));
+        QVERIFY2(!wide.has_value(), "59999 padding cells must be refused");
+        QCOMPARE(wide.error(), documents::DocxError::Limit);
+    }
+
+    void tableNodesCountedInLimit() {
+        // No w:tblGrid: the grid is the widest row. One table, one row and n empty cells are n + 2 nodes.
+        auto oneRow = [](int cells) {
+            QByteArray row;
+            for (int i = 0; i < cells; ++i)
+                row += "<w:tc/>";
+            return tableXml(QByteArray(), rowXml(row));
+        };
+        auto accepted = documents::readDocxContent(partsWithBody(oneRow(49998)));
+        QVERIFY2(accepted.has_value(), "exactly kMaxModelNodes table nodes must be accepted");
+        QCOMPARE(accepted->blocks.size(), qsizetype{1});
+
+        auto refused = documents::readDocxContent(partsWithBody(oneRow(49999)));
+        QVERIFY2(!refused.has_value(), "one cell over kMaxModelNodes must be refused");
         QCOMPARE(refused.error(), documents::DocxError::Limit);
     }
 };

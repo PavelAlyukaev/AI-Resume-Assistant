@@ -55,4 +55,9 @@ inline constexpr qint64 kMaxTextChars = 200000;
 // readDocxContent. A byte budget does not bound empty paragraphs, so the count is needed.
 inline constexpr qint64 kMaxModelNodes = 50000;
 
+// OQ7, A9: nesting depth limit, a planner value. Counted elements are w:tbl, w:sdt, w:customXml,
+// w:hyperlink, w:ins, w:moveTo, w:smartTag, w:fldSimple and the chosen mc:AlternateContent branch.
+// A deeper nesting gives DocxError::Limit (T-02-08).
+inline constexpr qint64 kMaxNestingDepth = 64;
+
 } // namespace documents

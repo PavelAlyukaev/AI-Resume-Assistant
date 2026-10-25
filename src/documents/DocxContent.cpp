@@ -3,6 +3,7 @@
 #include <QSet>
 #include <QStringView>
 #include <QXmlStreamReader>
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <expected>
@@ -46,6 +47,9 @@ constexpr QStringView kGridColumn = u"gridCol";
 constexpr QStringView kRow = u"tr";
 constexpr QStringView kCell = u"tc";
 constexpr QStringView kCellProperties = u"tcPr";
+constexpr QStringView kGridSpan = u"gridSpan";
+constexpr QStringView kVerticalMerge = u"vMerge";
+constexpr QStringView kRestart = u"restart";
 
 // Encodings the OPC rule allows (OQ3, A10): UTF-8 and UTF-16 in any letter case. A document with
 // no declaration is also accepted; any other declared encoding is refused.
@@ -673,6 +677,22 @@ struct ReadState {
     ListState lists;
     ParseBudget budget;
     QList<DocxWarning> warnings;
+    qint64 depth = 0; // open counted elements (T-02-08)
+};
+
+// Enters one counted element: the depth goes up for the lifetime of the scope and comes back down on
+// every exit, including an early return. exceeded() tells whether the depth passed kMaxNestingDepth.
+class DepthScope {
+  public:
+    explicit DepthScope(ReadState &st) : m_depth(st.depth) { ++m_depth; }
+    ~DepthScope() { --m_depth; }
+    DepthScope(const DepthScope &) = delete;
+    DepthScope &operator=(const DepthScope &) = delete;
+
+    bool exceeded() const { return m_depth > documents::kMaxNestingDepth; }
+
+  private:
+    qint64 &m_depth;
 };
 
 // Counts one model node (OQ9, T-02-02). False when the count passes kMaxModelNodes; the caller
@@ -699,69 +719,175 @@ std::expected<int, DocxError> readGridColumns(PartReader &reader) {
     return columns;
 }
 
-// Reads one w:tc right after its StartElement into row. Its blocks are read in document order; the
-// cell starts at the row cursor, which moves past it by one column for now (gridSpan comes later).
-std::expected<void, DocxError> readCell(ReadState &st, QList<TableCell> &cells, int &cursor) {
+// Span of a w:gridSpan: a number of at least 1; a missing, non-numeric or smaller value gives 1. A
+// larger value is clamped to kMaxModelNodes, a width that no table can use (T-02-10).
+qint64 readSpan(const QString &text) {
+    bool ok = false;
+    const qint64 value = text.toLongLong(&ok);
+    if (!ok || value < 1)
+        return 1;
+    return std::min(value, documents::kMaxModelNodes);
+}
+
+// Kind of a w:vMerge: restart opens a group; continue, or w:vMerge without a value, continues the
+// group that starts above (ISO/IEC 29500-1, the default of w:val is continue).
+enum class VerticalMerge { None, Restart, Continue };
+
+// The w:tcPr values this plan reads: the column span and the vertical merge.
+struct CellProps {
+    qint64 span = 1;
+    VerticalMerge merge = VerticalMerge::None;
+};
+
+// Reads w:tcPr right after its StartElement. Other children are skipped whole, including
+// w:tcPrChange, which holds the earlier properties of the cell.
+std::expected<void, DocxError> readCellProps(PartReader &reader, CellProps &props) {
+    return forEachChild(reader, [&props](PartReader &child) -> std::expected<void, DocxError> {
+        if (isWml(child.xml(), kGridSpan)) {
+            props.span = readSpan(wmlAttribute(child.xml(), kValue));
+        } else if (isWml(child.xml(), kVerticalMerge)) {
+            const QString value = wmlAttribute(child.xml(), kValue);
+            props.merge = QStringView(value) == kRestart ? VerticalMerge::Restart : VerticalMerge::Continue;
+        }
+        return skipElement(child);
+    });
+}
+
+// A cell while its table is read. Columns stay 64-bit until the grid is known, because a row may
+// hold spans that the grid trims later.
+struct PendingCell {
+    qint64 start = 0;
+    qint64 span = 1;
+    int rowSpan = 1;
+    QList<Block> blocks;
+};
+
+// The cell that opened a vertical merge: its row and its index in that row.
+struct MergeStart {
+    qsizetype row = 0;
+    qsizetype cell = 0;
+};
+
+// A table while its rows are read: the cells of each row in order, the first column after the last
+// cell of each row, the open vertical merges by start column, and the grid of w:tblGrid if any.
+struct TableBuild {
+    QList<QList<PendingCell>> rows;
+    QList<qint64> rowEnds;
+    QHash<qint64, MergeStart> merges;
+    std::optional<qint64> gridColumns;
+};
+
+// Reads one w:tc right after its StartElement into row rowIndex. The cell starts at the row cursor and
+// moves the cursor past its span. A continuation of a vertical merge is not a cell: it adds one to the
+// rowSpan of the cell that opened the merge, and its content is not shown (DOCX-05, T-02-10).
+std::expected<void, DocxError> readCell(ReadState &st, TableBuild &table, qsizetype rowIndex) {
     if (!countNode(st))
         return std::unexpected(DocxError::Limit);
-    TableCell cell;
-    cell.startColumn = cursor;
-    cell.columnSpan = 1;
-    cell.rowSpan = 1;
-    cursor += cell.columnSpan;
-    auto children = forEachChild(st.reader, [&st, &cell](PartReader &) -> std::expected<void, DocxError> {
-        if (isWml(st.reader.xml(), kCellProperties))
-            return skipElement(st.reader);
-        return readBlockChild(st, cell.blocks);
+    CellProps props;
+    QList<Block> blocks;
+    auto children =
+        forEachChild(st.reader, [&st, &props, &blocks](PartReader &) -> std::expected<void, DocxError> {
+            if (isWml(st.reader.xml(), kCellProperties))
+                return readCellProps(st.reader, props);
+            return readBlockChild(st, blocks);
+        });
+    if (!children)
+        return std::unexpected(children.error());
+
+    qint64 &cursor = table.rowEnds[rowIndex];
+    const qint64 start = cursor;
+    cursor += props.span;
+    if (props.merge == VerticalMerge::Continue) {
+        if (const auto open = table.merges.constFind(start); open != table.merges.constEnd()) {
+            table.rows[open->row][open->cell].rowSpan += 1;
+            return {};
+        }
+    }
+    // A cell that is not a continuation ends the merge of its column; a restart opens a new one.
+    table.merges.remove(start);
+    auto &row = table.rows[rowIndex];
+    row.append(PendingCell{start, props.span, 1, std::move(blocks)});
+    if (props.merge == VerticalMerge::Restart)
+        table.merges.insert(start, MergeStart{rowIndex, row.size() - 1});
+    return {};
+}
+
+// Reads one w:tr right after its StartElement: a new row of the table, filled by its w:tc elements.
+std::expected<void, DocxError> readRow(ReadState &st, TableBuild &table) {
+    if (!countNode(st))
+        return std::unexpected(DocxError::Limit);
+    table.rows.append(QList<PendingCell>{});
+    table.rowEnds.append(0);
+    const qsizetype rowIndex = table.rows.size() - 1;
+    return forEachChild(st.reader, [&st, &table, rowIndex](PartReader &) -> std::expected<void, DocxError> {
+        if (isWml(st.reader.xml(), kCell))
+            return readCell(st, table, rowIndex);
+        return skipElement(st.reader);
+    });
+}
+
+// Turns the built rows into the model (DOCX-05, T-02-10, OQ9). The grid is the number of w:gridCol;
+// without a grid it is the widest row, which must not pass kMaxModelNodes. Spans are trimmed to the
+// grid, a cell that starts beyond it is dropped, and each row is padded with empty cells up to the
+// grid. Every kept cell and every padding cell counts as a node.
+std::expected<Table, DocxError> finishTable(ReadState &st, TableBuild &build) {
+    qint64 grid = build.gridColumns.value_or(0);
+    if (grid == 0) {
+        for (const qint64 end : build.rowEnds)
+            grid = std::max(grid, end);
+        if (grid > documents::kMaxModelNodes)
+            return std::unexpected(DocxError::Limit);
+    }
+
+    Table table;
+    table.gridColumns = static_cast<int>(grid);
+    for (qsizetype r = 0; r < build.rows.size(); ++r) {
+        TableRow row;
+        for (PendingCell &pending : build.rows[r]) {
+            if (pending.start >= grid)
+                continue;
+            TableCell cell;
+            cell.startColumn = static_cast<int>(pending.start);
+            cell.columnSpan = static_cast<int>(std::min(pending.span, grid - pending.start));
+            cell.rowSpan = pending.rowSpan;
+            cell.blocks = std::move(pending.blocks);
+            row.cells.append(std::move(cell));
+        }
+        // Columns after the last cell of the row, up to the grid, are padding.
+        for (qint64 column = std::min(build.rowEnds.at(r), grid); column < grid; ++column) {
+            if (!countNode(st))
+                return std::unexpected(DocxError::Limit);
+            TableCell padding;
+            padding.startColumn = static_cast<int>(column);
+            row.cells.append(std::move(padding));
+        }
+        table.rows.append(std::move(row));
+    }
+    return table;
+}
+
+// Reads one w:tbl right after its StartElement: a counted element (T-02-08). Its w:tblGrid gives the
+// grid, its w:tr elements are read by readRow, and the model is made by finishTable.
+std::expected<Table, DocxError> readTable(ReadState &st) {
+    DepthScope depth(st);
+    if (depth.exceeded() || !countNode(st))
+        return std::unexpected(DocxError::Limit);
+    TableBuild build;
+    auto children = forEachChild(st.reader, [&st, &build](PartReader &) -> std::expected<void, DocxError> {
+        if (isWml(st.reader.xml(), kTableGrid)) {
+            auto columns = readGridColumns(st.reader);
+            if (!columns)
+                return std::unexpected(columns.error());
+            build.gridColumns = *columns;
+            return {};
+        }
+        if (isWml(st.reader.xml(), kRow))
+            return readRow(st, build);
+        return skipElement(st.reader);
     });
     if (!children)
         return std::unexpected(children.error());
-    cells.append(std::move(cell));
-    return {};
-}
-
-// Reads one w:tr right after its StartElement and appends it to rows.
-std::expected<void, DocxError> readRow(ReadState &st, QList<TableRow> &rows) {
-    if (!countNode(st))
-        return std::unexpected(DocxError::Limit);
-    TableRow row;
-    int cursor = 0;
-    auto children =
-        forEachChild(st.reader, [&st, &row, &cursor](PartReader &) -> std::expected<void, DocxError> {
-            if (isWml(st.reader.xml(), kCell))
-                return readCell(st, row.cells, cursor);
-            return skipElement(st.reader);
-        });
-    if (!children)
-        return std::unexpected(children.error());
-    rows.append(std::move(row));
-    return {};
-}
-
-// Reads one w:tbl right after its StartElement. Only w:tblGrid and w:tr are read here; the grid
-// width is the number of w:gridCol, or the widest row when there is no grid.
-std::expected<Table, DocxError> readTable(ReadState &st) {
-    if (!countNode(st))
-        return std::unexpected(DocxError::Limit);
-    Table table;
-    std::optional<int> gridColumns;
-    auto children =
-        forEachChild(st.reader, [&st, &table, &gridColumns](PartReader &) -> std::expected<void, DocxError> {
-            if (isWml(st.reader.xml(), kTableGrid)) {
-                auto columns = readGridColumns(st.reader);
-                if (!columns)
-                    return std::unexpected(columns.error());
-                gridColumns = *columns;
-                return {};
-            }
-            if (isWml(st.reader.xml(), kRow))
-                return readRow(st, table.rows);
-            return skipElement(st.reader);
-        });
-    if (!children)
-        return std::unexpected(children.error());
-    table.gridColumns = gridColumns.value_or(0);
-    return table;
+    return finishTable(st, build);
 }
 
 // One block child of the current element (w:body, w:tc or another block container), read whole:
