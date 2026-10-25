@@ -41,6 +41,16 @@ QByteArray wordDocument(const QByteArray &bodyXml = {}) {
     return wmlElement("document", "<w:body>" + bodyXml + "</w:body>");
 }
 
+// A word/document.xml with the prefixes w, r (relationship ids of w:hyperlink) and v (VML), so that a
+// fixture with those elements is well formed. The body holds bodyXml.
+QByteArray documentRoot(const QByteArray &bodyXml) {
+    return QByteArrayLiteral(
+               "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" "
+               "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" "
+               "xmlns:v=\"urn:schemas-microsoft-com:vml\"><w:body>") +
+           bodyXml + QByteArrayLiteral("</w:body></w:document>");
+}
+
 // Every message Qt delivers while a guard is alive is kept here for the test to inspect.
 QStringList &capturedMessages() {
     static QStringList messages;
@@ -571,6 +581,215 @@ class DocumentImportTest : public QObject {
             result.error(),
             QStringLiteral("Файл «Резюме.docx» отклонён: после распаковки содержимое слишком большое или "
                            "состоит из слишком многих частей. Сохраните резюме заново в Word и повторите."));
+    }
+
+    void listsKeepNestingThroughReadDocxFile() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // abstractNum 0 is bullets. abstractNum 1 is decimal; its level 1 is "%2.", which is shown
+        // approximately (OQ5), so one ListFormatApproximated is expected, for numId 2 only.
+        const QByteArray numbering =
+            wmlElement("numbering", "<w:abstractNum w:abstractNumId=\"0\">"
+                                    "<w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt "
+                                    "w:val=\"bullet\"/><w:lvlText w:val=\"-\"/></w:lvl>"
+                                    "<w:lvl w:ilvl=\"1\"><w:start w:val=\"1\"/><w:numFmt "
+                                    "w:val=\"bullet\"/><w:lvlText w:val=\"-\"/></w:lvl>"
+                                    "</w:abstractNum>"
+                                    "<w:abstractNum w:abstractNumId=\"1\">"
+                                    "<w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt "
+                                    "w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/></w:lvl>"
+                                    "<w:lvl w:ilvl=\"1\"><w:start w:val=\"1\"/><w:numFmt "
+                                    "w:val=\"decimal\"/><w:lvlText w:val=\"%2.\"/></w:lvl>"
+                                    "</w:abstractNum>"
+                                    "<w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num>"
+                                    "<w:num w:numId=\"2\"><w:abstractNumId w:val=\"1\"/></w:num>");
+
+        const auto listParagraph = [](const QString &text, int numId, int ilvl) {
+            return QStringLiteral(
+                       "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"%1\"/><w:numId w:val=\"%2\"/></w:numPr>"
+                       "</w:pPr><w:r><w:t>%3</w:t></w:r></w:p>")
+                .arg(ilvl)
+                .arg(numId)
+                .arg(text)
+                .toUtf8();
+        };
+        const QByteArray body = listParagraph(QStringLiteral("Навыки"), 1, 0) +
+                                listParagraph(QStringLiteral("Python"), 1, 1) +
+                                listParagraph(QStringLiteral("Первый этап"), 2, 0) +
+                                listParagraph(QStringLiteral("Второй этап"), 2, 0) +
+                                listParagraph(QStringLiteral("Подэтап"), 2, 1) +
+                                listParagraph(QStringLiteral("Третий этап"), 2, 0) +
+                                QStringLiteral("<w:p><w:r><w:t>Без списка</w:t></w:r></w:p>").toUtf8();
+
+        const QByteArray archive = buildStoredZip({
+            ZipEntry{"[Content_Types].xml", "<Types/>"},
+            ZipEntry{"word/document.xml", documentRoot(body)},
+            ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+            ZipEntry{"word/numbering.xml", numbering},
+        });
+        const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
+        QVERIFY(writeBytes(path, archive));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(result.has_value(), "a DOCX with nested lists must import");
+        QCOMPARE(result->document.blocks.size(), qsizetype{7});
+
+        const QString bullet(QChar(0x2022));
+        struct ExpectedItem {
+            QString text;
+            int listLevel;
+            bool expectBullet;
+            QString marker;
+        };
+        const QList<ExpectedItem> expected = {
+            {QStringLiteral("Навыки"), 0, true, bullet},
+            {QStringLiteral("Python"), 1, true, bullet},
+            {QStringLiteral("Первый этап"), 0, false, QStringLiteral("1.")},
+            {QStringLiteral("Второй этап"), 0, false, QStringLiteral("2.")},
+            {QStringLiteral("Подэтап"), 1, false, QStringLiteral("1.")},
+            {QStringLiteral("Третий этап"), 0, false, QStringLiteral("3.")},
+            {QStringLiteral("Без списка"), -1, false, QString()},
+        };
+        for (qsizetype i = 0; i < expected.size(); ++i) {
+            const auto *paragraph = std::get_if<documents::Paragraph>(&result->document.blocks.at(i).content);
+            QVERIFY2(paragraph != nullptr, "every block of the list fixture is a paragraph");
+            const ExpectedItem &want = expected.at(i);
+            QCOMPARE(paragraph->text, want.text);
+            QCOMPARE(paragraph->listLevel, want.listLevel);
+            QCOMPARE(paragraph->listMarker, want.marker);
+            if (want.listLevel >= 0)
+                QCOMPARE(paragraph->listKind == documents::ListKind::Bullet, want.expectBullet);
+        }
+
+        // Intentional: this records the OQ5 false positive. Remove it together with the code change.
+        QCOMPARE(result->warnings, QStringList{QStringLiteral(
+                                       "В файле «Резюме.docx» есть список с нумерацией, которую приложение "
+                                       "показывает упрощённо: номера показаны в виде «1.», «2.».")});
+    }
+
+    void tablesKeepRowsThroughReadDocxFile() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // The first child of w:tbl is an empty w:tblPr, as Word writes it. Row 2 starts a vertical merge
+        // (restart); row 3 holds its continuation (no value), which is not shown.
+        const QByteArray body =
+            QStringLiteral("<w:p><w:r><w:t>Перед таблицей</w:t></w:r></w:p>"
+                           "<w:tbl><w:tblPr/>"
+                           "<w:tblGrid><w:gridCol w:w=\"2000\"/><w:gridCol w:w=\"2000\"/></w:tblGrid>"
+                           "<w:tr><w:tc><w:tcPr><w:gridSpan w:val=\"2\"/></w:tcPr>"
+                           "<w:p><w:r><w:t>Шапка</w:t></w:r></w:p></w:tc></w:tr>"
+                           "<w:tr><w:tc><w:p><w:r><w:t>Левая</w:t></w:r></w:p></w:tc>"
+                           "<w:tc><w:p/></w:tc></w:tr>"
+                           "<w:tr><w:tc><w:tcPr><w:vMerge w:val=\"restart\"/></w:tcPr>"
+                           "<w:p><w:r><w:t>Объединённая</w:t></w:r></w:p></w:tc>"
+                           "<w:tc><w:p><w:r><w:t>Правая</w:t></w:r></w:p></w:tc></w:tr>"
+                           "<w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p/></w:tc>"
+                           "<w:tc><w:p><w:r><w:t>Ниже</w:t></w:r></w:p></w:tc></w:tr>"
+                           "</w:tbl>"
+                           "<w:p><w:r><w:t>После таблицы</w:t></w:r></w:p>")
+                .toUtf8();
+        const QByteArray archive = buildStoredZip({
+            ZipEntry{"[Content_Types].xml", "<Types/>"},
+            ZipEntry{"word/document.xml", documentRoot(body)},
+            ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+            ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
+        });
+        const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
+        QVERIFY(writeBytes(path, archive));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(result.has_value(), "a DOCX with a table between two paragraphs must import");
+        QVERIFY(result->warnings.isEmpty());
+        QCOMPARE(result->document.blocks.size(), qsizetype{3});
+
+        const auto *before = std::get_if<documents::Paragraph>(&result->document.blocks.at(0).content);
+        QVERIFY2(before != nullptr, "the first block must be a paragraph");
+        QCOMPARE(before->text, QStringLiteral("Перед таблицей"));
+        const auto *after = std::get_if<documents::Paragraph>(&result->document.blocks.at(2).content);
+        QVERIFY2(after != nullptr, "the last block must be a paragraph");
+        QCOMPARE(after->text, QStringLiteral("После таблицы"));
+
+        const auto *table = std::get_if<documents::Table>(&result->document.blocks.at(1).content);
+        QVERIFY2(table != nullptr, "the middle block must be a table");
+        QCOMPARE(table->gridColumns, 2);
+        QCOMPARE(table->rows.size(), qsizetype{4});
+
+        struct ExpectedCell {
+            int startColumn;
+            int columnSpan;
+            int rowSpan;
+            QString text;
+        };
+        const QList<QList<ExpectedCell>> expectedRows = {
+            {{0, 2, 1, QStringLiteral("Шапка")}},
+            {{0, 1, 1, QStringLiteral("Левая")}, {1, 1, 1, QString()}},
+            {{0, 1, 2, QStringLiteral("Объединённая")}, {1, 1, 1, QStringLiteral("Правая")}},
+            {{1, 1, 1, QStringLiteral("Ниже")}},
+        };
+        for (qsizetype r = 0; r < expectedRows.size(); ++r) {
+            const auto &cells = table->rows.at(r).cells;
+            QCOMPARE(cells.size(), expectedRows.at(r).size());
+            for (qsizetype c = 0; c < cells.size(); ++c) {
+                const documents::TableCell &cell = cells.at(c);
+                const ExpectedCell &want = expectedRows.at(r).at(c);
+                QCOMPARE(cell.startColumn, want.startColumn);
+                QCOMPARE(cell.columnSpan, want.columnSpan);
+                QCOMPARE(cell.rowSpan, want.rowSpan);
+                QCOMPARE(cell.blocks.size(), qsizetype{1});
+                const auto *paragraph = std::get_if<documents::Paragraph>(&cell.blocks.at(0).content);
+                QVERIFY2(paragraph != nullptr, "a cell of the table fixture holds a paragraph");
+                QCOMPARE(paragraph->text, want.text);
+            }
+        }
+    }
+
+    void hyperlinkAndInsertionGiveTextThroughReadDocxFile() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        const QString dir = QDir(root.path()).filePath(cyrillicSubdirName());
+        QVERIFY(QDir().mkpath(dir));
+
+        // The link text is not the address: a test that printed the address would fail. The deleted run
+        // holds its text in w:delText; the insertion and the deletion carry w:id and w:author, as Word
+        // writes.
+        const QByteArray body =
+            QStringLiteral(
+                "<w:p><w:r><w:t xml:space=\"preserve\">Портфолио: </w:t></w:r>"
+                "<w:hyperlink r:id=\"rId7\"><w:r><w:t>github.com/ivanov</w:t></w:r></w:hyperlink>"
+                "<w:ins w:id=\"1\" w:author=\"Тест\"><w:r><w:t xml:space=\"preserve\"> "
+                "вставка</w:t></w:r></w:ins>"
+                "<w:del w:id=\"2\" w:author=\"Тест\"><w:r><w:delText>удалено</w:delText></w:r></w:del></w:p>")
+                .toUtf8();
+        const QByteArray rels =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+            "<Relationship Id=\"rId7\" "
+            "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" "
+            "Target=\"https://example.org/skrytyi-adres\" TargetMode=\"External\"/>"
+            "</Relationships>";
+        const QByteArray archive = buildStoredZip({
+            ZipEntry{"[Content_Types].xml", "<Types/>"},
+            ZipEntry{"word/_rels/document.xml.rels", rels},
+            ZipEntry{"word/document.xml", documentRoot(body)},
+            ZipEntry{"word/styles.xml", wmlElement("styles", {})},
+            ZipEntry{"word/numbering.xml", wmlElement("numbering", {})},
+        });
+        const QString path = QDir(dir).filePath(QStringLiteral("Резюме.docx"));
+        QVERIFY(writeBytes(path, archive));
+
+        auto result = DocumentImport::readDocxFile(path);
+        QVERIFY2(result.has_value(), "a DOCX with a hyperlink, an insertion and a deletion must import");
+        QVERIFY(result->warnings.isEmpty());
+        QCOMPARE(result->document.blocks.size(), qsizetype{1});
+        const auto *only = std::get_if<documents::Paragraph>(&result->document.blocks.at(0).content);
+        QVERIFY2(only != nullptr, "the block is a paragraph");
+        QCOMPARE(only->text, QStringLiteral("Портфолио: github.com/ivanov вставка"));
     }
 
     void warningTextsArePairwiseDistinct() {
