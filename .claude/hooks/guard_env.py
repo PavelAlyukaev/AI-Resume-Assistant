@@ -4,6 +4,10 @@ import json
 import re
 import sys
 
+print(
+    "[HOOK] PostToolUse: check_cpp_format.py triggered",
+    file=sys.stderr
+)
 try:
     event = json.load(sys.stdin)
 except (ValueError, OSError):

@@ -1,3 +1,4 @@
+# Проект для ИИ
 cmake_minimum_required(VERSION 3.25)
 project(AIResumeAssistant VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
@@ -100,6 +101,10 @@ qt_add_executable(resume_e2e_test tests/ResumeE2ETest.cpp)
 target_link_libraries(resume_e2e_test PRIVATE resume_core Qt6::Test)
 add_test(NAME resume_e2e COMMAND resume_e2e_test)
 set_tests_properties(resume_e2e PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+qt_add_executable(resume_repository_test tests/ResumeRepositoryTest.cpp)
+target_link_libraries(resume_repository_test PRIVATE resume_core Qt6::Test)
+add_test(NAME resume_repository COMMAND resume_repository_test)
 
 qt_add_executable(resume_json_test tests/ResumeJsonTest.cpp)
 target_link_libraries(resume_json_test PRIVATE resume_core Qt6::Test)
