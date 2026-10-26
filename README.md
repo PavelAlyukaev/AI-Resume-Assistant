@@ -63,6 +63,14 @@ GitHub Actions (`.github/workflows/ci.yml`) на каждый push и PR в `mai
 
 Агент может читать и изменять исходники по задаче, запускать сборку и тесты, но не должен читать `.env`, публиковать секреты, выполнять разрушительные операции без разрешения или выдавать неподтверждённые тесты за успешные. `PreToolUse` hook блокирует некоторые попытки доступа к `.env`; `PostToolUse` hook проверяет форматирование C++ при наличии clang-format. Это дополнительные меры, а не гарантия безопасности.
 
+Кастомные команды Claude Code лежат в `.claude/commands/` и переключают профиль настроек GSD (`.planning/config.json`) через скрипт `.claude/scripts/gsd-profile.cjs`:
+- `/gsd-economy` — профиль economy (экономия токенов);
+- `/gsd-balanced` — профиль balanced (баланс качества и стоимости);
+- `/gsd-quality` — профиль quality (максимальное качество);
+- `/gsd-restore` — возврат исходного конфига из резервной копии `.planning/config.json.gsd-original.bak`.
+
+Команды разрешают агенту запускать только `node .claude/scripts/gsd-profile.cjs <профиль>` и не редактируют конфиг вручную.
+
 Навыки: `/write-tests` — создание тестов; `/review-changes` — ручное ревью изменений. В `.claude/settings.json` агенту без подтверждения разрешены `git status`, `git diff`, `git add`, `git commit`, `cmake --build`, `ctest` и `clang-format --dry-run`; `git push` всегда требует подтверждения, `rm -rf` запрещён. Тесты запускаются через `ctest --preset debug`, отдельный E2E — через `ctest --preset debug -R resume_e2e`. Детали демонстрации: [docs/verification.md](docs/verification.md), отчёт: [docs/about.md](docs/about.md).
 
 ## Приватность
